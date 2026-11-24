@@ -22,6 +22,7 @@ async fn healthz_is_ok() {
     let res = http::router(AppState {
         db,
         display: Display::new(&demo_stats(running_viz::display::today())),
+        sync: Default::default(),
     })
     .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
     .await

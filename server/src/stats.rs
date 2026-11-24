@@ -33,7 +33,9 @@ pub struct Month {
 pub fn month(activities: &[Activity], types: &[&str], today: NaiveDate) -> Month {
     let days = days_in_month(today);
     let mut daily_km = vec![0.0; days as usize];
-    let (mut metres, mut seconds) = (0i64, 0.0);
+    let mut metres = 0i64;
+    // pace only from runs that have both distance and moving time
+    let (mut timed_metres, mut seconds) = (0i64, 0.0);
     for a in activities {
         if !types.contains(&a.activity_type.as_str()) {
             continue;
@@ -45,10 +47,13 @@ pub fn month(activities: &[Activity], types: &[&str], today: NaiveDate) -> Month
         }
         daily_km[local.day0() as usize] += a.distance as f64 / 1000.0;
         metres += a.distance;
-        seconds += a.total_timer_time.unwrap_or(0.0);
+        if let Some(t) = a.total_timer_time.filter(|t| *t > 0.0 && a.distance > 0) {
+            timed_metres += a.distance;
+            seconds += t;
+        }
     }
     let pace_s_per_km =
-        (metres > 0 && seconds > 0.0).then(|| (seconds / (metres as f64 / 1000.0)).round() as u32);
+        (timed_metres > 0).then(|| (seconds / (timed_metres as f64 / 1000.0)).round() as u32);
     Month {
         km: metres as f64 / 1000.0,
         pace_s_per_km,
@@ -162,6 +167,17 @@ mod tests {
     fn dogs_skip_treadmill() {
         let acts = [act("treadmill_run", "2026-12-02T18:00:00Z", 5.0, 1500.0)];
         assert_eq!(month(&acts, DOG_RUN_TYPES, dec(14)).km, 0.0);
+    }
+
+    #[test]
+    fn pace_ignores_runs_without_timer() {
+        let mut untimed = act("run", "2026-12-03T07:00:00Z", 5.0, 0.0);
+        untimed.total_timer_time = None;
+        let timed = act("run", "2026-12-02T07:00:00Z", 5.0, 1500.0);
+        let m = month(&[timed, untimed.clone()], MY_RUN_TYPES, dec(14));
+        assert_eq!((m.km, m.pace_s_per_km), (10.0, Some(300)));
+        let m = month(&[untimed], MY_RUN_TYPES, dec(14));
+        assert_eq!((m.km, m.pace_s_per_km), (5.0, None));
     }
 
     #[test]

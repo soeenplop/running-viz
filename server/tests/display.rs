@@ -23,6 +23,7 @@ fn app() -> axum::Router {
     http::router(AppState {
         db,
         display: Display::new(&demo_stats(day())),
+        sync: Default::default(),
     })
 }
 

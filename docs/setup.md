@@ -6,8 +6,9 @@
 cd deploy
 install -m 600 .env.example .env   # owner-only: it will hold passwords and API keys
 # fill in the secrets (the commands are in the file)
-docker compose up -d                                   # production
-docker compose -f compose.yaml -f compose.dev.yaml up -d   # local: ports + OpenAPI docs
+# first start: only the database and Endurain (the server needs API keys, created in step 2)
+docker compose up -d db endurain                                   # production
+docker compose -f compose.yaml -f compose.dev.yaml up -d db endurain   # local: ports + OpenAPI docs
 ```
 
 The first start creates one Postgres with two databases (`endurain`, `running_viz`).
@@ -31,6 +32,7 @@ ADMIN_USERNAME=soeren ADMIN_PASSWORD='<password>' \
 ../scripts/endurain-bootstrap.sh >> .env
 ```
 
+- Then start everything (same `-f` flags as above): `docker compose up -d`.
 - The display shows each account's Endurain profile name (so `ADMIN_NAME` is what you see on the display).
 - The script appends `ENDURAIN_KEY_SOEREN`, `ENDURAIN_KEY_NANUQ`, `ENDURAIN_KEY_ANORI` and the generated dog passwords to `.env`.
 - It is safe to re-run, even after an interruption. Existing users and goals are kept, and each run creates new API keys (remove the old lines from `.env`). Pass `NANUQ_PASSWORD` / `ANORI_PASSWORD` to keep the dogs' passwords; otherwise, or if they don't work, the admin sets new ones and the script prints them.

@@ -46,5 +46,8 @@ impl Config {
 }
 
 fn required(name: &str) -> Result<String> {
-    std::env::var(name).with_context(|| format!("missing environment variable {name}"))
+    std::env::var(name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .with_context(|| format!("missing environment variable {name}"))
 }
