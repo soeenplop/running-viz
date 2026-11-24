@@ -5,6 +5,7 @@ use running_viz::{
     display::{self, Display},
     endurain::Account,
     http, stats,
+    sync::{self, SyncStatus},
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
@@ -39,19 +40,21 @@ async fn main() -> Result<()> {
 
     // Show zeros until the first fetch succeeds; afterwards keep the last good stats on errors.
     let display = Display::new(&stats::empty(&names, display::today()));
-    let refresh = display.clone();
+    let status = SyncStatus::default();
+    let (refresh_display, refresh_status) = (display.clone(), status.clone());
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
             tick.tick().await;
-            match stats::fetch(&accounts[0], &accounts[1..], display::today()).await {
-                Ok(s) => refresh.update(&s),
-                Err(err) => tracing::warn!("stats refresh failed: {err:#}"),
-            }
+            sync::refresh(&accounts, &refresh_display, &refresh_status).await;
         }
     });
 
-    let app = http::router(AppState { db, display });
+    let app = http::router(AppState {
+        db,
+        display,
+        sync: status,
+    });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await?;
     tracing::info!(port = config.port, "listening");
     axum::serve(listener, app)
