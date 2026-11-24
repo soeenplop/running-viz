@@ -34,6 +34,10 @@ After every run, an Apple Watch–triggered Shortcut asks **"Who came along?"** 
 | Frontend | `running.soeenplop.dev` |
 | Endurain | `endurain.soeenplop.dev` |
 
+## Getting started
+
+See [docs/setup.md](docs/setup.md): start Endurain with Docker Compose and create all accounts, goals and API keys with one script.
+
 ## Status
 
-🚧 Work in progress. Setup and usage instructions follow with each component.
+🚧 Work in progress. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
