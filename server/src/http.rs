@@ -23,18 +23,34 @@ async fn index() -> axum::response::Html<&'static str> {
     axum::response::Html(include_str!("../../web/index.html"))
 }
 
-/// Liveness: the process runs and the database answers.
+/// Liveness plus sync state: 503 only if the database is down; a failing
+/// Endurain refresh shows up as `"sync": "failing"` with the last success time.
 async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
-    match sqlx::query("SELECT 1").execute(&state.db).await {
-        Ok(_) => (StatusCode::OK, Json(json!({ "status": "ok" }))),
+    let db_ok = match sqlx::query("SELECT 1").execute(&state.db).await {
+        Ok(_) => true,
         Err(err) => {
             tracing::warn!(%err, "health check: database unavailable");
-            (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "status": "database unavailable" })),
-            )
+            false
         }
-    }
+    };
+    let sync = state.sync.snapshot();
+    let sync_state = match (&sync.last_error, sync.last_success) {
+        (Some(_), _) => "failing",
+        (None, Some(_)) => "ok",
+        (None, None) => "pending",
+    };
+    let body = json!({
+        "status": if db_ok { "ok" } else { "database unavailable" },
+        "sync": sync_state,
+        "last_sync": sync.last_success,
+        "sync_error": sync.last_error,
+    });
+    let code = if db_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (code, Json(body))
 }
 
 /// Raw 1-bit framebuffer for the e-paper display.

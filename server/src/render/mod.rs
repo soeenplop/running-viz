@@ -310,11 +310,11 @@ fn goal(v: f64) -> String {
     format!("{}", v.round() as i64)
 }
 
-/// "Ø 5:42 /KM" or "Ø –" without runs.
+/// "Ø 5:42 /KM"; empty without runs.
 fn pace(p: Option<u32>) -> String {
     match p {
         Some(s) => format!("Ø {}:{:02} /KM", s / 60, s % 60),
-        None => "Ø – /KM".to_string(),
+        None => String::new(),
     }
 }
 
@@ -364,7 +364,7 @@ mod tests {
     fn formats() {
         assert_eq!(km(69.64), "69,6");
         assert_eq!(pace(Some(342)), "Ø 5:42 /KM");
-        assert_eq!(pace(None), "Ø – /KM");
+        assert_eq!(pace(None), "");
     }
 
     #[test]
