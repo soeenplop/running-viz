@@ -1,7 +1,7 @@
 //! Database tests. Need a Postgres: set TEST_DATABASE_URL (CI does). Skipped otherwise.
 
 use axum::{body::Body, http::Request};
-use running_viz::{AppState, MIGRATOR, http};
+use running_viz::{AppState, MIGRATOR, display::Display, http, render::demo_stats};
 use sqlx::{PgPool, Postgres, Transaction};
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -19,10 +19,13 @@ async fn pool() -> Option<PgPool> {
 #[tokio::test]
 async fn healthz_is_ok() {
     let Some(db) = pool().await else { return };
-    let res = http::router(AppState { db })
-        .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+    let res = http::router(AppState {
+        db,
+        display: Display::new(&demo_stats(running_viz::display::today())),
+    })
+    .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+    .await
+    .unwrap();
     assert_eq!(res.status(), 200);
 }
 
