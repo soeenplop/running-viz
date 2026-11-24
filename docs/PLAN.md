@@ -115,7 +115,7 @@ Based on the approved mockup, plus average pace:
 
 ### 3.5 `web/` – fullscreen page
 
-One `index.html` (no build step), embedded into the server binary and served at `/` (domain `running.soeenplop.dev` points at the same container). Shows `/display.png` centered on a dark background, reloads it every 5 min, fullscreen on click.
+One `index.html` (no build step), embedded into the server binary and served at `/` (domain `running.soeenplop.dev` points at the same container). Shows `/display.png` centered on a dark background, reloads it every minute, fullscreen on click.
 
 ### 3.6 `firmware/` – ESP8266 (C++, PlatformIO, battery)
 
