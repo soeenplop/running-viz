@@ -44,7 +44,7 @@ Services: `endurain` (pinned image digest), `db` (one postgres 18 with two datab
 One-time Endurain setup (documented in `docs/setup.md`, done by hand in the UI, no automation):
 1. Create admin (me) via setup token.
 2. Create users `nanuq` and `anori`.
-3. In each account: monthly run distance goal (200 / 100 / 100 km) and an API key. My key: `activities:read activities:upload account`. Dog keys additionally `activities:write`. Raise the admin setting `api_key_max_lifetime_days` so keys don't expire after a year.
+3. In each account: monthly run distance goal (200 / 100 / 100 km) and an API key. My key: `activities:read activities:upload account`. Dog keys additionally `activities:write`. Raise the admin setting `api_key_max_lifetime_days` so keys don't expire after a year. Renewal: create a new key before expiry, update `.env`, restart the server, revoke the old key.
 4. Dog accounts: default visibility `followers`, hide HR/cadence/power. I follow both dogs.
 
 ### 3.2 `server/` – Rust
@@ -56,7 +56,7 @@ Stack: `axum`, `tokio`, `sqlx` (Postgres + migrations), `reqwest` (rustls), `ser
 2. **Upload worker**: works through `uploads` rows by status, independent of Dropbox:
    `pending → (POST upload, store job_id) → job_started → (poll job, store activity_id) → uploaded → (PATCH, copies only) → done`.
    - Idempotency key is deterministic: `fit:<content_hash>` for originals, `run:<run_id>:<dog>:<generation>` for copies. A replay after a crash returns the same job.
-   - Job succeeded with **0 ids** (Endurain skipped a duplicate) → look the activity up by start time via the list endpoint. **>1 ids** → take the first, log the rest.
+   - Only a job with **exactly one** id (or an already persisted mapping) continues automatically. 0 or >1 ids → status `needs_attention`, raw job stored, logged; no PATCH/DELETE, resolved by hand.
    - Original done → the run gets sport, start/end time, distance, has GPS from the activity.
 3. **Companion matching**: see 3.3.
 4. **Dog copies**: for each (run, dog) that should exist: FIT → GPX (only timestamp, lat/lon, elevation) → upload row with the dog's key → after upload, `PATCH` `name` and `activity_type` (= original's type, so the copy counts toward the run goal regardless of GPX sport tags). Dog removed → delete the copy. Re-added → `generation + 1` = fresh upload.
@@ -69,7 +69,7 @@ Stack: `axum`, `tokio`, `sqlx` (Postgres + migrations), `reqwest` (rustls), `ser
 | GET | `/healthz` | – | liveness + last sync time |
 | GET | `/display.bin` | – | 15 000 bytes, 1 bpp, MSB first, 1 = white; `ETag`, `304` on `If-None-Match` |
 | GET | `/display.png` | – | same image as PNG |
-| POST | `/api/companions` | `Bearer SHORTCUT_TOKEN` | `{"dogs": ["nanuq","anori"], "ended_at": "…"?, "run": "latest"?}` (empty list = nobody) |
+| POST | `/api/companions` | `Bearer SHORTCUT_TOKEN` | `{"dogs": ["nanuq","anori"], "ended_at": "<workout end, RFC 3339>"}` (empty list = nobody) |
 
 The public routes are an explicit owner decision: the image (incl. km per day) may be public. Tokens are redacted from logs. `/api/companions` limits the body size and accepts at most one claim per minute. Detailed sync/auth errors only go to the server logs.
 
@@ -78,16 +78,16 @@ The public routes are an explicit owner decision: the image (incl. km per day) m
 - `fit_files(id, dropbox_path, content_hash UNIQUE, bytes, received_at)`
 - `runs(id, fit_file_id, endurain_activity_id, sport, start_time, end_time, distance_m, has_gps)`
 - `uploads(id, kind[original|copy], fit_file_id, run_id NULL, dog NULL, generation, idempotency_key UNIQUE, job_id, endurain_activity_id, status, attempts, last_error)`
-- `companion_claims(id, received_at, ended_at NULL, target[auto|latest], dogs, run_id NULL, status[pending|matched|expired])`
+- `companion_claims(id, received_at, ended_at NULL, dogs, run_id NULL, status[pending|matched|expired])`
 
 ### 3.3 Matching companions to runs
 
-The Shortcut is triggered by the Apple Watch automation **when the workout ends**, so the claim time ≈ the run's end time. The FIT file arrives minutes later.
-- Reference time `t` = `ended_at` if the Shortcut sends it (latest workout end date from Health, if the Shortcut can read it), else `received_at`.
-- A claim matches only a run with `end_time` in **[t − 15 min, t + 2 min]**. No match yet → stays `pending`, retried every loop, `expired` after 24 h. More than one candidate → stays pending and is logged (no guessing).
-- **Correction**: re-running the Shortcut manually sends `"run": "latest"` → applies to the most recent run. The newest claim per run wins: missing dogs get their copy deleted, new dogs get one.
+The Shortcut is triggered by the Apple Watch automation **when the workout ends**. The FIT file arrives minutes later.
+- The Shortcut sends `ended_at` = end date of the most recent workout from Health. A claim matches only a run with **`|end_time − ended_at| ≤ 2 min`**. No match yet → stays `pending`, retried every loop, `expired` after 24 h. More than one candidate → stays pending and is logged (no guessing).
+- **Correction** = run the same Shortcut again: same `ended_at` → same run. The newest claim per run wins: missing dogs get their copy deleted, new dogs get one.
+- **Fallback** if the Shortcut cannot read the workout end date (verified first in PR 8): `t = received_at`, window `[t − 5 min, t + 1 min]`. Accepted residual risk: two runs ending within 5 min of each other. Corrections then happen by hand in Endurain.
 - Only running types with GPS get copies.
-- Tests: delayed FIT, claim after FIT, reversed order of two runs, duplicate claim, empty dog list, ambiguity.
+- Tests: delayed FIT, claim before/after FIT, two runs 10 min apart where only the first has synced (its copies must survive), duplicate claim, empty dog list, ambiguity.
 
 ### 3.4 Display layout (400×300, 1 bit)
 
