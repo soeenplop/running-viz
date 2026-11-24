@@ -8,6 +8,10 @@ pub struct Config {
     pub endurain_url: String,
     /// Endurain accounts: me first, then the dogs (from `RUNNERS`, keys from `ENDURAIN_KEY_<NAME>`).
     pub runners: Vec<RunnerConfig>,
+    /// HealthFit import; `None` if the Dropbox variables are not set.
+    pub dropbox: Option<crate::dropbox::DropboxConfig>,
+    /// Workouts that started (Europe/Berlin) before this date are not imported.
+    pub import_since: chrono::NaiveDate,
 }
 
 #[derive(Clone)]
@@ -41,7 +45,34 @@ impl Config {
                 .context("PORT must be a number")?,
             endurain_url: required("ENDURAIN_URL")?,
             runners,
+            dropbox: dropbox()?,
+            import_since: crate::import::parse_since(
+                std::env::var("DROPBOX_IMPORT_SINCE").ok().as_deref(),
+            )?,
         })
+    }
+}
+
+/// All three Dropbox credentials, or none (import disabled).
+fn dropbox() -> Result<Option<crate::dropbox::DropboxConfig>> {
+    let get = |n: &str| std::env::var(n).ok().filter(|v| !v.trim().is_empty());
+    match (
+        get("DROPBOX_APP_KEY"),
+        get("DROPBOX_APP_SECRET"),
+        get("DROPBOX_REFRESH_TOKEN"),
+    ) {
+        (Some(app_key), Some(app_secret), Some(refresh_token)) => {
+            Ok(Some(crate::dropbox::DropboxConfig {
+                app_key,
+                app_secret,
+                refresh_token,
+                folder: get("DROPBOX_FOLDER").unwrap_or_else(|| "/Apps/HealthFitExporter".into()),
+            }))
+        }
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "set all of DROPBOX_APP_KEY, DROPBOX_APP_SECRET and DROPBOX_REFRESH_TOKEN, or none"
+        ),
     }
 }
 

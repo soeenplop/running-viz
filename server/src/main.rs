@@ -1,10 +1,11 @@
 use anyhow::Result;
 use running_viz::{
-    AppState, MIGRATOR,
+    AppState, MIGRATOR, Webhook,
     config::Config,
     display::{self, Display},
+    dropbox::Dropbox,
     endurain::Account,
-    http, stats,
+    http, import, stats,
     sync::{self, SyncStatus},
 };
 use sqlx::postgres::PgPoolOptions;
@@ -41,12 +42,41 @@ async fn main() -> Result<()> {
     // Show zeros until the first fetch succeeds; afterwards keep the last good stats on errors.
     let display = Display::new(&stats::empty(&names, display::today()));
     let status = SyncStatus::default();
-    let (refresh_display, refresh_status) = (display.clone(), status.clone());
+    let trigger = std::sync::Arc::new(tokio::sync::Notify::new());
+    let dropbox = config
+        .dropbox
+        .clone()
+        .map(|c| Dropbox::new(client.clone(), c));
+    if dropbox.is_none() {
+        tracing::warn!("Dropbox not configured: HealthFit import disabled");
+    }
+    let webhook = config.dropbox.as_ref().map(|c| Webhook {
+        app_secret: c.app_secret.clone(),
+        trigger: trigger.clone(),
+    });
+
+    // Sync loop: every 5 minutes, or right away when the Dropbox webhook fires.
+    let (loop_db, loop_display, loop_status, since) = (
+        db.clone(),
+        display.clone(),
+        status.clone(),
+        config.import_since,
+    );
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
-            tick.tick().await;
-            sync::refresh(&accounts, &refresh_display, &refresh_status).await;
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = trigger.notified() => tracing::info!("dropbox webhook: syncing now"),
+            }
+            if let Some(dropbox) = &dropbox {
+                let out = import::run(&loop_db, dropbox, &accounts[0], since).await;
+                if out.runs_created > 0 {
+                    tracing::info!(runs = out.runs_created, "imported runs");
+                }
+                loop_status.set_import_ok(out.ok());
+            }
+            sync::refresh(&accounts, &loop_display, &loop_status).await;
         }
     });
 
@@ -54,6 +84,7 @@ async fn main() -> Result<()> {
         db,
         display,
         sync: status,
+        webhook,
     });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await?;
     tracing::info!(port = config.port, "listening");

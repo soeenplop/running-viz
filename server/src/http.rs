@@ -15,6 +15,10 @@ pub fn router(state: AppState) -> Router {
         .route("/healthz", get(healthz))
         .route("/display.bin", get(display_bin))
         .route("/display.png", get(display_png))
+        .route(
+            "/dropbox/webhook",
+            get(webhook_challenge).post(webhook_notify),
+        )
         .with_state(state)
 }
 
@@ -44,6 +48,13 @@ async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         "sync": sync_state,
         "last_sync": sync.last_success,
         "sync_error": sync.last_error,
+        // coarse on purpose (public endpoint); details are in the server log
+        "import": match (state.webhook.is_some(), sync.import_ok) {
+            (false, _) => "disabled",
+            (true, None) => "pending",
+            (true, Some(true)) => "ok",
+            (true, Some(false)) => "failing",
+        },
     });
     let code = if db_ok {
         StatusCode::OK
@@ -51,6 +62,49 @@ async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         StatusCode::SERVICE_UNAVAILABLE
     };
     (code, Json(body))
+}
+
+#[derive(serde::Deserialize)]
+struct Challenge {
+    challenge: String,
+}
+
+/// Dropbox verifies the webhook URL by asking us to echo `challenge`.
+async fn webhook_challenge(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<Challenge>,
+) -> Response {
+    if state.webhook.is_none() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "text/plain"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        q.challenge,
+    )
+        .into_response()
+}
+
+/// Dropbox says something changed: check the signature, then start a sync right away.
+async fn webhook_notify(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> StatusCode {
+    let Some(webhook) = &state.webhook else {
+        return StatusCode::NOT_FOUND;
+    };
+    let signature = headers
+        .get("X-Dropbox-Signature")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    if !crate::dropbox::signature_valid(&webhook.app_secret, &body, signature) {
+        return StatusCode::FORBIDDEN;
+    }
+    webhook.trigger.notify_one();
+    StatusCode::OK
 }
 
 /// Raw 1-bit framebuffer for the e-paper display.

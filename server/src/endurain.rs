@@ -1,6 +1,6 @@
 //! Minimal Endurain API client (v0.21), authenticated per account with an API key.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde::Deserialize;
@@ -22,6 +22,19 @@ pub struct Activity {
     /// moving time in seconds
     pub total_timer_time: Option<f64>,
     pub start_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub end_time: Option<DateTime<Utc>>,
+}
+
+/// Background ingestion job (`/jobs/{id}`).
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct Job {
+    pub id: String,
+    /// queued | running | succeeded | failed
+    pub status: String,
+    #[serde(default)]
+    pub activity_ids: Vec<String>,
+    pub error_code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -98,6 +111,38 @@ impl Account {
     }
 }
 
+impl Account {
+    /// Starts an upload job. Replaying the same `idempotency_key` returns the original job.
+    pub async fn upload(
+        &self,
+        filename: &str,
+        bytes: Vec<u8>,
+        idempotency_key: &str,
+    ) -> Result<Job> {
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_owned());
+        let form = reqwest::multipart::Form::new().part("file", part);
+        send(
+            self.http
+                .post(format!("{}/activities/upload", self.base))
+                .header("X-API-Key", &self.key)
+                .header("Idempotency-Key", idempotency_key)
+                .multipart(form),
+        )
+        .await
+    }
+
+    /// The job and its full JSON (kept for `needs_attention` diagnostics).
+    pub async fn job(&self, id: &str) -> Result<(Job, serde_json::Value)> {
+        let raw: serde_json::Value = send(self.get(&format!("/jobs/{id}"))).await?;
+        let job = serde_json::from_value(raw.clone()).context("unexpected endurain job")?;
+        Ok((job, raw))
+    }
+
+    pub async fn activity(&self, id: &str) -> Result<Activity> {
+        send(self.get(&format!("/activities/{id}"))).await
+    }
+}
+
 async fn send<T: serde::de::DeserializeOwned>(req: RequestBuilder) -> Result<T> {
     let res = req.send().await.context("endurain request failed")?;
     let status = res.status();
@@ -109,7 +154,35 @@ async fn send<T: serde::de::DeserializeOwned>(req: RequestBuilder) -> Result<T> 
             .ok()
             .and_then(|v| v["title"].as_str().map(str::to_owned))
             .unwrap_or_default();
-        bail!("endurain answered {status} {title}");
+        return Err(ApiError {
+            status: status.as_u16(),
+            title,
+        }
+        .into());
     }
     res.json().await.context("unexpected endurain response")
 }
+
+/// An HTTP error answer from Endurain (status + problem title, no body).
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: u16,
+    pub title: String,
+}
+
+impl ApiError {
+    /// A 4xx about this request that retrying cannot fix. Account problems (401/403:
+    /// expired key, missing scope), timeouts, rate limits and the "too many open
+    /// uploads" conflict stay retryable: fixing them recovers every queued upload.
+    pub fn is_permanent(&self) -> bool {
+        (400..500).contains(&self.status) && ![401, 403, 408, 409, 429].contains(&self.status)
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "endurain answered {} {}", self.status, self.title)
+    }
+}
+
+impl std::error::Error for ApiError {}
