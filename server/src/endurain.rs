@@ -1,6 +1,6 @@
 //! Minimal Endurain API client (v0.21), authenticated per account with an API key.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{Client, RequestBuilder};
 use serde::Deserialize;
@@ -22,6 +22,8 @@ pub struct Activity {
     /// moving time in seconds
     pub total_timer_time: Option<f64>,
     pub start_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub end_time: Option<DateTime<Utc>>,
 }
 
 /// Background ingestion job (`/jobs/{id}`).
@@ -129,8 +131,15 @@ impl Account {
         .await
     }
 
-    pub async fn job(&self, id: &str) -> Result<Job> {
-        send(self.get(&format!("/jobs/{id}"))).await
+    /// The job and its full JSON (kept for `needs_attention` diagnostics).
+    pub async fn job(&self, id: &str) -> Result<(Job, serde_json::Value)> {
+        let raw: serde_json::Value = send(self.get(&format!("/jobs/{id}"))).await?;
+        let job = serde_json::from_value(raw.clone()).context("unexpected endurain job")?;
+        Ok((job, raw))
+    }
+
+    pub async fn activity(&self, id: &str) -> Result<Activity> {
+        send(self.get(&format!("/activities/{id}"))).await
     }
 }
 
@@ -145,7 +154,34 @@ async fn send<T: serde::de::DeserializeOwned>(req: RequestBuilder) -> Result<T> 
             .ok()
             .and_then(|v| v["title"].as_str().map(str::to_owned))
             .unwrap_or_default();
-        bail!("endurain answered {status} {title}");
+        return Err(ApiError {
+            status: status.as_u16(),
+            title,
+        }
+        .into());
     }
     res.json().await.context("unexpected endurain response")
 }
+
+/// An HTTP error answer from Endurain (status + problem title, no body).
+#[derive(Debug)]
+pub struct ApiError {
+    pub status: u16,
+    pub title: String,
+}
+
+impl ApiError {
+    /// A 4xx that retrying cannot fix (except timeouts, rate limits and the
+    /// "too many open uploads" conflict).
+    pub fn is_permanent(&self) -> bool {
+        (400..500).contains(&self.status) && ![408, 409, 429].contains(&self.status)
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "endurain answered {} {}", self.status, self.title)
+    }
+}
+
+impl std::error::Error for ApiError {}

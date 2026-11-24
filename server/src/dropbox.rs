@@ -100,49 +100,72 @@ impl Dropbox {
         Ok(t.access_token)
     }
 
+    /// Calls an RPC endpoint. Errors carry only the HTTP status and Dropbox's
+    /// `error_summary` tag (e.g. `reset/..`), never the response body.
     async fn rpc<T: serde::de::DeserializeOwned>(
         &self,
         endpoint: &str,
         body: serde_json::Value,
-    ) -> Result<T> {
+    ) -> Result<T, Error> {
         let res = self
             .http
             .post(format!("{}/2/{endpoint}", self.api))
-            .bearer_auth(self.access_token().await?)
+            .bearer_auth(self.access_token().await.map_err(Error::Other)?)
             .json(&body)
             .send()
             .await
-            .with_context(|| format!("dropbox {endpoint} failed"))?;
+            .map_err(|e| {
+                Error::Other(anyhow::Error::new(e).context(format!("dropbox {endpoint} failed")))
+            })?;
         let status = res.status();
         if !status.is_success() {
-            let summary = res.text().await.unwrap_or_default();
-            bail!(
-                "dropbox {endpoint} answered {status}: {}",
-                summary.chars().take(200).collect::<String>()
-            );
+            let summary = res
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v["error_summary"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+            return Err(Error::Api {
+                status: status.as_u16(),
+                summary,
+            });
         }
-        res.json()
-            .await
-            .with_context(|| format!("unexpected dropbox {endpoint} response"))
+        res.json().await.map_err(|e| {
+            Error::Other(
+                anyhow::Error::new(e).context(format!("unexpected dropbox {endpoint} response")),
+            )
+        })
     }
 
     /// First page of the configured folder (non-recursive).
     pub async fn list(&self) -> Result<Page> {
-        self.rpc(
-            "files/list_folder",
-            json!({ "path": self.cfg.folder, "recursive": false }),
-        )
-        .await
+        Ok(self
+            .rpc(
+                "files/list_folder",
+                json!({ "path": self.cfg.folder, "recursive": false }),
+            )
+            .await?)
     }
 
-    /// Changes since `cursor`.
-    pub async fn list_continue(&self, cursor: &str) -> Result<Page> {
-        self.rpc("files/list_folder/continue", json!({ "cursor": cursor }))
+    /// Changes since `cursor`; `None` if Dropbox reset the cursor (start over with `list`).
+    pub async fn list_continue(&self, cursor: &str) -> Result<Option<Page>> {
+        match self
+            .rpc("files/list_folder/continue", json!({ "cursor": cursor }))
             .await
+        {
+            Ok(page) => Ok(Some(page)),
+            Err(Error::Api {
+                status: 409,
+                summary,
+            }) if summary.starts_with("reset") => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Downloads a file by its Dropbox id (`id:…`, ASCII-safe for the API header).
-    pub async fn download(&self, id: &str) -> Result<Vec<u8>> {
+    /// Returns the bytes with the content hash of exactly these bytes (from the
+    /// response metadata), or `None` if the file was deleted in the meantime.
+    pub async fn download(&self, id: &str) -> Result<Option<Download>> {
         let res = self
             .http
             .post(format!("{}/2/files/download", self.content))
@@ -151,12 +174,62 @@ impl Dropbox {
             .send()
             .await
             .context("dropbox download failed")?;
-        if !res.status().is_success() {
-            bail!("dropbox download answered {}", res.status());
+        let status = res.status();
+        if status.as_u16() == 409 {
+            let summary = res
+                .json::<serde_json::Value>()
+                .await
+                .ok()
+                .and_then(|v| v["error_summary"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+            if summary.starts_with("path/not_found") {
+                return Ok(None);
+            }
+            bail!("dropbox download answered 409 {summary}");
         }
-        Ok(res.bytes().await.context("dropbox download body")?.to_vec())
+        if !status.is_success() {
+            bail!("dropbox download answered {status}");
+        }
+        #[derive(Deserialize)]
+        struct Meta {
+            content_hash: String,
+        }
+        let meta: Meta = res
+            .headers()
+            .get("Dropbox-API-Result")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| serde_json::from_str(v).ok())
+            .context("dropbox download without metadata")?;
+        let bytes = res.bytes().await.context("dropbox download body")?.to_vec();
+        Ok(Some(Download {
+            bytes,
+            content_hash: meta.content_hash,
+        }))
     }
 }
+
+pub struct Download {
+    pub bytes: Vec<u8>,
+    pub content_hash: String,
+}
+
+/// Dropbox API error: status plus the `error_summary` tag only.
+#[derive(Debug)]
+pub enum Error {
+    Api { status: u16, summary: String },
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Api { status, summary } => write!(f, "dropbox answered {status} {summary}"),
+            Error::Other(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
 
 /// Verifies a webhook body against `X-Dropbox-Signature` (hex HMAC-SHA256 with the app secret).
 pub fn signature_valid(app_secret: &str, body: &[u8], signature_hex: &str) -> bool {

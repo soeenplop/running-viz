@@ -70,18 +70,11 @@ async fn main() -> Result<()> {
                 _ = trigger.notified() => tracing::info!("dropbox webhook: syncing now"),
             }
             if let Some(dropbox) = &dropbox {
-                match import::run(&loop_db, dropbox, &accounts[0], since).await {
-                    Ok(runs) => {
-                        if runs > 0 {
-                            tracing::info!(runs, "imported runs");
-                        }
-                        loop_status.set_import_error(None);
-                    }
-                    Err(err) => {
-                        tracing::warn!("import failed: {err:#}");
-                        loop_status.set_import_error(Some(format!("{err}")));
-                    }
+                let out = import::run(&loop_db, dropbox, &accounts[0], since).await;
+                if out.runs_created > 0 {
+                    tracing::info!(runs = out.runs_created, "imported runs");
                 }
+                loop_status.set_import_ok(out.ok());
             }
             sync::refresh(&accounts, &loop_display, &loop_status).await;
         }

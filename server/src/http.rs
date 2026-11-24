@@ -48,7 +48,13 @@ async fn healthz(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
         "sync": sync_state,
         "last_sync": sync.last_success,
         "sync_error": sync.last_error,
-        "import_error": sync.import_error,
+        // coarse on purpose (public endpoint); details are in the server log
+        "import": match (state.webhook.is_some(), sync.import_ok) {
+            (false, _) => "disabled",
+            (true, None) => "pending",
+            (true, Some(true)) => "ok",
+            (true, Some(false)) => "failing",
+        },
     });
     let code = if db_ok {
         StatusCode::OK
