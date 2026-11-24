@@ -243,10 +243,11 @@ pub struct ApiError {
 
 impl ApiError {
     /// A 4xx about this request that retrying cannot fix. Account problems (401/403:
-    /// expired key, missing scope), timeouts, rate limits and the "too many open
-    /// uploads" conflict stay retryable: fixing them recovers every queued upload.
+    /// expired key, missing scope), timeouts, rate limits, the "too many open uploads"
+    /// conflict and stale/missing ETags (412/428: re-read and retry) stay retryable.
     pub fn is_permanent(&self) -> bool {
-        (400..500).contains(&self.status) && ![401, 403, 408, 409, 429].contains(&self.status)
+        (400..500).contains(&self.status)
+            && ![401, 403, 408, 409, 412, 428, 429].contains(&self.status)
     }
 }
 

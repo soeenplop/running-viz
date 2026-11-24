@@ -153,7 +153,11 @@ pub async fn plan_copies(db: &PgPool, dogs: &[String]) -> Result<()> {
                 }
                 // only finished copies are deleted; unfinished ones finish first (a crashed
                 // upload may already exist in Endurain), then the next pass removes them
-                (false, Some((id, status, _))) if status == "done" => {
+                // also copies stuck in needs_attention that exist in Endurain
+                (false, Some((id, status, _)))
+                    if status == "done"
+                        || (status == "needs_attention" && has_activity(db, *id).await?) =>
+                {
                     sqlx::query("UPDATE uploads SET status = 'delete_pending', updated_at = now() WHERE id = $1")
                         .bind(id)
                         .execute(db)
@@ -307,11 +311,19 @@ async fn rename(
     row: &sqlx::postgres::PgRow,
 ) -> Result<()> {
     let original: String = row.get("original_id");
-    let name = me
-        .activity(&original)
-        .await?
-        .name
-        .unwrap_or_else(|| "Run".into());
+    // the original may be gone (deleted in Endurain): the copy still gets a name,
+    // and reconcile removes it later
+    let name = match me.activity(&original).await {
+        Ok(a) => a.name.unwrap_or_else(|| "Run".into()),
+        Err(err)
+            if err
+                .downcast_ref::<ApiError>()
+                .is_some_and(|e| e.status == 404) =>
+        {
+            "Run".into()
+        }
+        Err(err) => return Err(err),
+    };
     dog.rename(copy, &name, &row.get::<String, _>("sport"))
         .await?;
     sqlx::query("UPDATE uploads SET status = 'done', updated_at = now() WHERE id = $1")
@@ -319,6 +331,15 @@ async fn rename(
         .execute(db)
         .await?;
     Ok(())
+}
+
+async fn has_activity(db: &PgPool, id: Uuid) -> Result<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT endurain_activity_id IS NOT NULL FROM uploads WHERE id = $1")
+            .bind(id)
+            .fetch_one(db)
+            .await?,
+    )
 }
 
 async fn set(db: &PgPool, id: Uuid, status: &str, column: &str, value: &str) -> Result<()> {

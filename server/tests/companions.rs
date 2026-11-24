@@ -540,3 +540,77 @@ async fn endpoint_checks_token_dogs_and_rate() {
         .unwrap();
     assert_eq!(stored, vec!["anori", "nanuq"]);
 }
+
+/// Stuck-copy cases: a stale ETag (412) is retried, a deleted original still lets the
+/// copy finish, and an unwanted copy stuck in needs_attention is deleted.
+#[tokio::test]
+async fn copies_do_not_get_stuck_after_upload() {
+    let Some(db) = fresh_db().await else { return };
+    let dog = dog_server().await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/activities/copy-1"))
+        .respond_with(
+            ResponseTemplate::new(412).set_body_json(json!({ "title": "Precondition Failed" })),
+        )
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&dog)
+        .await;
+    let me = MockServer::start().await; // original deleted: every GET is a 404
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&me)
+        .await;
+    let me_acc = Account::new(reqwest::Client::new(), &me.uri(), "me");
+    let accounts = HashMap::from([(
+        "nanuq".to_string(),
+        Account::new(reqwest::Client::new(), &dog.uri(), "dog"),
+    )]);
+    let r = run(&db, "2026-12-10T07:00:00Z", 30).await;
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-10T07:00:00Z"),
+        Some("2026-12-10T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-10T08:00:00Z").await;
+    for _ in 0..4 {
+        companions::process_copies(&db, &me_acc, &accounts)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "done".into(), 0)]
+    );
+    let patch = dog
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PATCH")
+        .last()
+        .unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+    assert_eq!(sent["name"], "Run");
+
+    // a copy that ended in needs_attention but exists in Endurain is still removed
+    sqlx::query("UPDATE uploads SET status = 'needs_attention' WHERE run_id = $1")
+        .bind(r)
+        .execute(&db)
+        .await
+        .unwrap();
+    claim(
+        &db,
+        &[],
+        Some("2026-12-10T07:00:00Z"),
+        Some("2026-12-10T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-10T09:00:00Z").await;
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "delete_pending".into(), 0)]
+    );
+}
