@@ -46,6 +46,12 @@ services:
       dockerfile: server/Dockerfile
     environment:
       DATABASE_URL: postgres://running_viz:${RUNNING_VIZ_DB_PASSWORD:?}@db:5432/running_viz
+      ENDURAIN_URL: http://endurain:8080
+      # empty until scripts/endurain-bootstrap.sh has written the keys (server refuses to start without them)
+      RUNNERS: soeren,nanuq,anori
+      ENDURAIN_KEY_SOEREN: ${ENDURAIN_KEY_SOEREN:-}
+      ENDURAIN_KEY_NANUQ: ${ENDURAIN_KEY_NANUQ:-}
+      ENDURAIN_KEY_ANORI: ${ENDURAIN_KEY_ANORI:-}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       db:
