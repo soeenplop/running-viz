@@ -46,7 +46,9 @@ cargo test                      # unit tests
 TEST_DATABASE_URL=postgres://… cargo test   # + database tests
 ```
 
-The server runs migrations on startup and exposes `GET /healthz`.
+The server runs migrations on startup and exposes `GET /healthz` (database, Endurain sync and Dropbox import status).
+
+Tests that read real HealthFit exports need `RUNNING_VIZ_FIT_FIXTURES=<dir with run.fit, treadmill.fit>`; those files contain GPS tracks and are not committed.
 
 ## Status
 
