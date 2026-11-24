@@ -1,0 +1,46 @@
+# Production stack. Local development: see compose.dev.yaml.
+name: running-viz
+
+services:
+  db:
+    image: docker.io/postgres:18@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      ENDURAIN_DB_PASSWORD: ${ENDURAIN_DB_PASSWORD:?}
+      RUNNING_VIZ_DB_PASSWORD: ${RUNNING_VIZ_DB_PASSWORD:?}
+    volumes:
+      - db-data:/var/lib/postgresql
+      - ./db/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  endurain:
+    image: ghcr.io/endurain-project/endurain:v0.21.0@sha256:7d3097a24e56e1fabcba95ac7e2854f715ef6df45fb3e8e126106e37524bd661
+    environment:
+      DB_HOST: db
+      DB_USER: endurain
+      DB_DATABASE: endurain
+      DB_PASSWORD: ${ENDURAIN_DB_PASSWORD:?}
+      SECRET_KEY: ${ENDURAIN_SECRET_KEY:?}
+      FERNET_KEY: ${ENDURAIN_FERNET_KEY:?}
+      ENDURAIN_HOST: ${ENDURAIN_HOST:?}
+      TZ: Europe/Berlin
+      ENVIRONMENT: ${ENDURAIN_ENVIRONMENT:-production}
+      BEHIND_PROXY: ${ENDURAIN_BEHIND_PROXY:-false}
+      TRUSTED_PROXIES: ${ENDURAIN_TRUSTED_PROXIES:-}
+    volumes:
+      - endurain-data:/app/backend/data
+      - endurain-logs:/app/backend/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  endurain-data:
+  endurain-logs:
