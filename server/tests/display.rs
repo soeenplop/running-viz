@@ -74,3 +74,46 @@ fn demo_snapshot() {
         "rendering changed; check and run UPDATE_SNAPSHOTS=1 cargo test"
     );
 }
+
+async fn get_with(inm: &str) -> (StatusCode, usize) {
+    let res = app()
+        .oneshot(
+            Request::get("/display.bin")
+                .header(header::IF_NONE_MATCH, inm)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    (
+        status,
+        res.into_body().collect().await.unwrap().to_bytes().len(),
+    )
+}
+
+#[tokio::test]
+async fn weak_and_unrelated_validators() {
+    let etag = running_viz::display::Frame::new(&demo_stats(day())).etag;
+    assert_eq!(
+        get_with(&format!("W/{etag}")).await,
+        (StatusCode::NOT_MODIFIED, 0)
+    );
+    assert_eq!(get_with("\",*,\"").await, (StatusCode::OK, BYTES));
+}
+
+/// March 2026 starts on a Sunday: six calendar rows must all fit, incl. the 31st.
+#[test]
+fn six_week_month_shows_last_day() {
+    let last = NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+    let img = render(&demo_stats(last));
+    // The 31st is in row 6, column 2 (Tuesday) and drawn inverted (black) as today.
+    let (cw, rh) = (384.0 / 7.0, 140 / 6);
+    let x = 8 + cw as u32 + 5;
+    let y = 160 + 5 * rh as u32 + 2;
+    assert!(
+        img.is_black(x, y),
+        "today's cell of a 6-week month must be visible"
+    );
+    assert!(y + rh as u32 - 3 < 300);
+}

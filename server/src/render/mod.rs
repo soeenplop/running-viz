@@ -153,13 +153,15 @@ fn dog_block(b: &mut Bitmap, r: &Runner, y: i32) {
 
 fn calendar(b: &mut Bitmap, today: NaiveDate, daily: &[f64]) {
     fill(b, 0, 142, 400, 2, INK);
-    let (gx, gy, cw, rh) = (8, 160, 384.0 / 7.0, 28);
+    let first = today.with_day(1).unwrap();
+    let offset = first.weekday().num_days_from_monday();
+    let weeks = (offset + days_in_month(today)).div_ceil(7) as i32; // 4–6 rows
+    // rows share the 140 px below the weekday labels (28 px for 5 weeks, 23 px for 6)
+    let (gx, gy, cw, rh) = (8, 160, 384.0 / 7.0, 140 / weeks);
     for (i, d) in WEEKDAYS.iter().enumerate() {
         let cx = gx + (i as f64 * cw + cw / 2.0) as i32;
         text(b, d, cx, 155, Font::Small, Alignment::Center, INK);
     }
-    let first = today.with_day(1).unwrap();
-    let offset = first.weekday().num_days_from_monday();
     for day in 1..=days_in_month(today) {
         let idx = day + offset - 1;
         let (col, row) = ((idx % 7) as f64, (idx / 7) as i32);
@@ -190,7 +192,7 @@ fn calendar(b: &mut Bitmap, today: NaiveDate, daily: &[f64]) {
                 &km(k),
                 x + w - 3,
                 y + h - 3,
-                Font::Medium,
+                Font::Header,
                 Alignment::Right,
                 color,
             );
