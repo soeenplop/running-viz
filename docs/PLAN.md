@@ -39,24 +39,29 @@ Endurain is the source of truth for activities and goals. The server's own Postg
 
 ### 3.1 `deploy/` – Docker Compose
 
-Services: `endurain` (pinned image digest), `endurain-db` (postgres 18), `server`, `server-db` (postgres 18, separate instance; no shared DB to keep ownership clear). `.env.example` documents every variable. A `compose.override.yaml` for local dev exposes ports and sets Endurain `ENVIRONMENT=development` (OpenAPI available).
+Services: `endurain` (pinned image digest), `db` (one postgres 18 with two databases and roles: `endurain` and `running_viz`, created by an init script), `server` (added in PR 3). `.env.example` documents every variable. An opt-in `compose.dev.yaml` (`docker compose -f compose.yaml -f compose.dev.yaml up`) exposes ports and sets Endurain `ENVIRONMENT=development` (OpenAPI available); production never loads it.
 
 One-time Endurain setup (documented in `docs/setup.md`, done by hand in the UI, no automation):
 1. Create admin (me) via setup token.
 2. Create users `nanuq` and `anori`.
-3. In each account: monthly run distance goal (200 / 100 / 100 km), API key with scopes `activities:read activities:upload activities:write account`.
+3. In each account: monthly run distance goal (200 / 100 / 100 km) and an API key. My key: `activities:read activities:upload account`. Dog keys additionally `activities:write`. Raise the admin setting `api_key_max_lifetime_days` so keys don't expire after a year.
 4. Dog accounts: default visibility `followers`, hide HR/cadence/power. I follow both dogs.
 
 ### 3.2 `server/` – Rust
 
 Stack: `axum`, `tokio`, `sqlx` (Postgres + migrations), `reqwest` (rustls), `serde`, `fitparser`, `embedded-graphics` + `u8g2-fonts`, `png`, `chrono` + `chrono-tz`, `tracing`. Config from env.
 
-**Background loop** (one tokio task, every 5 min, plus on demand):
-1. **Dropbox import**: `list_folder` / `list_folder/continue` with stored cursor (Dropbox refresh token + app key/secret in env). For each new `.fit`: download → upload to my Endurain account (`Idempotency-Key` = Dropbox `content_hash`) → poll job → store run (activity id, start/end time, sport, distance, has GPS).
-2. **Companion matching**: attach unmatched companion claims to runs (see 3.3).
-3. **Dog copies**: for each run with dogs and no copy yet: FIT → GPX (only timestamp, lat/lon, elevation; nothing else) → upload with the dog's key → poll job → `PATCH` name (same as original) → store copy id. Removed dogs: delete their copy.
-4. **Reconcile**: if an original no longer exists in Endurain (404), delete its copies.
-5. **Stats refresh**: for each of the 3 accounts: monthly run goal + current month's run activities (Europe/Berlin) → totals, avg pace (Σ timer time / Σ distance), km per day → in-memory state → re-render image, new ETag.
+**Background loop** (one tokio task, every 5 min). Every step persists its state *before* the next external call, so a restart resumes where it stopped:
+1. **Dropbox fetch**: `list_folder` / `list_folder/continue` (Dropbox refresh token + app key/secret in env). Each page's new `.fit` entries (path, `content_hash`, **file bytes**) and the next cursor are written in **one transaction**. Keeping the FIT bytes in Postgres (small files) makes late claims and re-copies possible.
+2. **Upload worker**: works through `uploads` rows by status, independent of Dropbox:
+   `pending → (POST upload, store job_id) → job_started → (poll job, store activity_id) → uploaded → (PATCH, copies only) → done`.
+   - Idempotency key is deterministic: `fit:<content_hash>` for originals, `run:<run_id>:<dog>:<generation>` for copies. A replay after a crash returns the same job.
+   - Job succeeded with **0 ids** (Endurain skipped a duplicate) → look the activity up by start time via the list endpoint. **>1 ids** → take the first, log the rest.
+   - Original done → the run gets sport, start/end time, distance, has GPS from the activity.
+3. **Companion matching**: see 3.3.
+4. **Dog copies**: for each (run, dog) that should exist: FIT → GPX (only timestamp, lat/lon, elevation) → upload row with the dog's key → after upload, `PATCH` `name` and `activity_type` (= original's type, so the copy counts toward the run goal regardless of GPX sport tags). Dog removed → delete the copy. Re-added → `generation + 1` = fresh upload.
+5. **Stats refresh**: for each of the 3 accounts: monthly run goal + current month's activities (Europe/Berlin, paginated) of types `run`, `trail_run`, `track_run` → total km, avg pace (Σ timer time / Σ distance), km per day → in-memory state → re-render; ETag = hash of the bitmap. On upstream failure the last good stats stay visible.
+6. **Reconcile** (once a day): only originals *with copies*, current and previous month. A `404` means deleted → delete the copies. Auth errors and timeouts are just retried, never treated as deletion. Conditional writes always fetch a fresh version first. `Retry-After` is honored.
 
 **HTTP API** (`running-api.soeenplop.dev`):
 | Method | Path | Auth | Purpose |
@@ -64,17 +69,25 @@ Stack: `axum`, `tokio`, `sqlx` (Postgres + migrations), `reqwest` (rustls), `ser
 | GET | `/healthz` | – | liveness + last sync time |
 | GET | `/display.bin` | – | 15 000 bytes, 1 bpp, MSB first, 1 = white; `ETag`, `304` on `If-None-Match` |
 | GET | `/display.png` | – | same image as PNG |
-| GET | `/api/summary` | – | JSON of the numbers on the display (debugging) |
-| POST | `/api/companions` | `Bearer SHORTCUT_TOKEN` | `{"dogs": ["nanuq","anori"]}` (empty = nobody) |
+| POST | `/api/companions` | `Bearer SHORTCUT_TOKEN` | `{"dogs": ["nanuq","anori"], "ended_at": "…"?, "run": "latest"?}` (empty list = nobody) |
 
-**DB tables**: `dropbox_state(cursor)`, `runs(id, dropbox_path, content_hash UNIQUE, endurain_activity_id, sport, start_time, end_time, distance_m, has_gps, status, error)`, `companion_claims(id, received_at, dogs, run_id NULL)`, `dog_copies(run_id, dog, endurain_activity_id, status, UNIQUE(run_id, dog))`.
+The public routes are an explicit owner decision: the image (incl. km per day) may be public. Tokens are redacted from logs. `/api/companions` limits the body size and accepts at most one claim per minute. Detailed sync/auth errors only go to the server logs.
+
+**DB tables** (`running_viz` database):
+- `dropbox_state(cursor)`
+- `fit_files(id, dropbox_path, content_hash UNIQUE, bytes, received_at)`
+- `runs(id, fit_file_id, endurain_activity_id, sport, start_time, end_time, distance_m, has_gps)`
+- `uploads(id, kind[original|copy], fit_file_id, run_id NULL, dog NULL, generation, idempotency_key UNIQUE, job_id, endurain_activity_id, status, attempts, last_error)`
+- `companion_claims(id, received_at, ended_at NULL, target[auto|latest], dogs, run_id NULL, status[pending|matched|expired])`
 
 ### 3.3 Matching companions to runs
 
-The Shortcut fires when the Apple Watch workout ends, the FIT file arrives minutes later. Rule:
-- A claim matches the **run whose `end_time` is closest to `received_at`**, within `−10 min … +3 h` (claim may come before the FIT arrives; it stays pending until then).
-- A newer claim for the same run **replaces** the older one → that is the correction mechanism (re-run the Shortcut).
-- Only running sports with GPS get copies. Claims that match nothing for 24 h are marked expired.
+The Shortcut is triggered by the Apple Watch automation **when the workout ends**, so the claim time ≈ the run's end time. The FIT file arrives minutes later.
+- Reference time `t` = `ended_at` if the Shortcut sends it (latest workout end date from Health, if the Shortcut can read it), else `received_at`.
+- A claim matches only a run with `end_time` in **[t − 15 min, t + 2 min]**. No match yet → stays `pending`, retried every loop, `expired` after 24 h. More than one candidate → stays pending and is logged (no guessing).
+- **Correction**: re-running the Shortcut manually sends `"run": "latest"` → applies to the most recent run. The newest claim per run wins: missing dogs get their copy deleted, new dogs get one.
+- Only running types with GPS get copies.
+- Tests: delayed FIT, claim after FIT, reversed order of two runs, duplicate claim, empty dog list, ambiguity.
 
 ### 3.4 Display layout (400×300, 1 bit)
 
@@ -106,14 +119,16 @@ One `index.html` (no build step), embedded into the server binary and served at 
 ### 3.6 `firmware/` – ESP8266 (C++, PlatformIO, battery)
 
 - Board: Waveshare e-Paper ESP8266 Driver Board; panel 4.2" 400×300 (GxEPD2 driver; exact class to be confirmed on hardware: `GxEPD2_420` vs `GxEPD2_420_GDEY042T81`).
-- Wake → WiFi → `GET /display.bin` with stored ETag (RTC memory) → on `200` full refresh, on `304` nothing → deep sleep 30 min (06:00–23:00), until 06:00 at night.
+- Wake → WiFi → `GET /display.bin` with the stored ETag (RTC memory) → `304`: nothing; `200`: stream the bytes straight into the panel RAM (no 15 KB heap buffer), refresh **only if exactly 15 000 bytes arrived**, then save the ETag → panel hibernate → deep sleep **fixed 30 min**, also after any failure.
+- Deadlines: WiFi 15 s, HTTP/TLS 15 s, whole wake 45 s.
+- HTTPS with `BearSSL::WiFiClientSecure::setInsecure()`: no certificate check. Deliberate: the image is public and the worst case of a MITM is a wrong picture; NTP + trust anchors on an ESP8266 are not worth it.
 - WiFi credentials + API URL in a gitignored `secrets.h` (`secrets.example.h` committed).
-- Deep sleep needs GPIO16 → RST; to be verified on the board. Fallback: run on USB.
-- Plain HTTP is not allowed on the public domain if Traefik forces HTTPS → use `BearSSL::WiFiClientSecure` with `setInsecure()` (public data, no secrets sent).
+- **Hardware smoke test right after the renderer PR** (when the owner attaches the board): GPIO16 → RST wake, memory with TLS, the 304 path, readability of a busy month, sleep current. Fallback if deep sleep doesn't work: USB power.
 
 ## 4. Quality
 
-- Rust: `cargo fmt`, `clippy -D warnings`, unit tests (GPX conversion, matching, stats, renderer snapshots), one ignored-by-default integration test against a local Endurain.
+- Rust: `cargo fmt`, `clippy -D warnings`, unit tests (GPX conversion, matching, stats incl. Europe/Berlin month boundary and an empty month, renderer snapshots, upload state machine incl. restart after the 202 response and before the PATCH), one ignored-by-default integration test against a local Endurain.
+- **Acceptance test with a real HealthFit FIT** (with pauses): import the original, the GPX copy goes to a dog account; check activity type, goal contribution, distance/timer time against the original, and that the GPX contains no HR/cadence/power.
 - Firmware: `pio run` must compile.
 - GitHub Actions: Rust checks + PlatformIO build.
 
@@ -122,9 +137,9 @@ One `index.html` (no build step), embedded into the server binary and served at 
 | # | Branch | Title |
 |---|---|---|
 | 1 | `docs/plan` | `docs: add implementation plan` |
-| 2 | `feat/compose` | `feat(deploy): docker compose with endurain` + `docs/setup.md` |
-| 3 | `feat/server-skeleton` | `feat(server): axum skeleton, config, migrations, dockerfile, ci` |
-| 4 | `feat/renderer` | `feat(server): render display image and serve png/bin` |
+| 2 | `feat/compose` | `feat(deploy): docker compose with endurain` + `docs/setup.md` (Endurain + db only) |
+| 3 | `feat/server-skeleton` | `feat(server): axum skeleton, config, migrations, dockerfile, ci` (adds `server` to compose) |
+| 4 | `feat/renderer` | `feat(server): render display image and serve png/bin` (fixture stats) → hardware smoke test when the board is attached |
 | 5 | `feat/web` | `feat(web): fullscreen display page` |
 | 6 | `feat/endurain-stats` | `feat(server): monthly stats and goals from endurain` |
 | 7 | `feat/dropbox-import` | `feat(server): import healthfit fit files from dropbox` |
