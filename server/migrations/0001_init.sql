@@ -45,7 +45,11 @@ CREATE TABLE uploads (
     raw_job               JSONB,
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CHECK ((kind = 'original') = (dog IS NULL))
+    CHECK ((kind = 'original') = (dog IS NULL)),
+    CHECK (kind <> 'copy' OR run_id IS NOT NULL),
+    -- a resumable state always carries the id needed to resume
+    CHECK (status <> 'job_started' OR job_id IS NOT NULL),
+    CHECK (status NOT IN ('uploaded', 'done', 'delete_pending') OR endurain_activity_id IS NOT NULL)
 );
 CREATE INDEX uploads_status ON uploads (status);
 
@@ -56,6 +60,7 @@ CREATE TABLE companion_claims (
     ended_at     TIMESTAMPTZ,
     dogs         TEXT[] NOT NULL,
     run_id       UUID REFERENCES runs (id),
-    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'matched', 'expired'))
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'matched', 'expired')),
+    CHECK (status <> 'matched' OR run_id IS NOT NULL)
 );
 CREATE INDEX companion_claims_status ON companion_claims (status);
