@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111">
+<title>Lauf-Challenge</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  body { display: grid; place-items: center; cursor: pointer; }
+  img {
+    width: min(100vw, calc(100vh * 4 / 3));
+    aspect-ratio: 4 / 3;
+    image-rendering: pixelated;
+    background: #fff;
+  }
+</style>
+</head>
+<body>
+<img id="display" src="/display.png" alt="Lauf-Challenge">
+<script>
+  // Reload the image every minute; the server answers 304 when nothing changed.
+  const img = document.getElementById("display");
+  setInterval(async () => {
+    try {
+      const res = await fetch("/display.png", { cache: "no-cache" });
+      if (!res.ok) return;
+      const url = URL.createObjectURL(await res.blob());
+      img.onload = () => URL.revokeObjectURL(url);
+      img.src = url;
+    } catch { /* offline: keep the last image */ }
+  }, 60_000);
+
+  // Click/tap toggles fullscreen.
+  document.body.addEventListener("click", () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen?.();
+  });
+</script>
+</body>
+</html>

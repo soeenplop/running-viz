@@ -41,7 +41,9 @@ services:
     restart: unless-stopped
 
   server:
-    build: ../server
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
     environment:
       DATABASE_URL: postgres://running_viz:${RUNNING_VIZ_DB_PASSWORD:?}@db:5432/running_viz
       RUST_LOG: ${RUST_LOG:-info}
