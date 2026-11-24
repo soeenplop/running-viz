@@ -1,0 +1,12 @@
+# Local development overrides. Opt-in only:
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  endurain:
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ENVIRONMENT: development # serves /openapi.json and /api/v1/docs
