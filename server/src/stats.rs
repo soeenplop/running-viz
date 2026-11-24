@@ -138,6 +138,7 @@ mod tests {
             total_timer_time: Some(secs),
             start_time: Some(start.parse().unwrap()),
             end_time: None,
+            name: None,
         }
     }
 

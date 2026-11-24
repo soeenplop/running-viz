@@ -1,6 +1,6 @@
 use anyhow::Result;
 use running_viz::{
-    AppState, MIGRATOR, Webhook,
+    AppState, CompanionsApi, MIGRATOR, Webhook, companions,
     config::Config,
     display::{self, Display},
     dropbox::Dropbox,
@@ -50,6 +50,26 @@ async fn main() -> Result<()> {
     if dropbox.is_none() {
         tracing::warn!("Dropbox not configured: HealthFit import disabled");
     }
+    let dog_names: Vec<String> = config
+        .runners
+        .iter()
+        .skip(1)
+        .map(|r| r.username.clone())
+        .collect();
+    let dog_accounts: std::collections::HashMap<String, Account> = dog_names
+        .iter()
+        .cloned()
+        .zip(accounts.iter().skip(1).cloned())
+        .collect();
+    let companions_api = config.shortcut_token.clone().map(|token| CompanionsApi {
+        token,
+        dogs: dog_names.clone(),
+        trigger: trigger.clone(),
+        last: Default::default(),
+    });
+    if companions_api.is_none() {
+        tracing::warn!("SHORTCUT_TOKEN not set: \"who came along\" endpoint disabled");
+    }
     let webhook = config.dropbox.as_ref().map(|c| Webhook {
         app_secret: c.app_secret.clone(),
         trigger: trigger.clone(),
@@ -64,6 +84,7 @@ async fn main() -> Result<()> {
     );
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+        let mut last_reconcile: Option<chrono::NaiveDate> = None;
         loop {
             tokio::select! {
                 _ = tick.tick() => {}
@@ -76,6 +97,17 @@ async fn main() -> Result<()> {
                 }
                 loop_status.set_import_ok(out.ok());
             }
+            if let Err(err) = dog_copies(
+                &loop_db,
+                &accounts[0],
+                &dog_names,
+                &dog_accounts,
+                &mut last_reconcile,
+            )
+            .await
+            {
+                tracing::warn!("dog copies failed: {err:#}");
+            }
             sync::refresh(&accounts, &loop_display, &loop_status).await;
         }
     });
@@ -85,12 +117,44 @@ async fn main() -> Result<()> {
         display,
         sync: status,
         webhook,
+        companions: companions_api,
     });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await?;
     tracing::info!(port = config.port, "listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await?;
+    Ok(())
+}
+
+/// Claims → runs → copies; deleted originals are checked once a day.
+async fn dog_copies(
+    db: &sqlx::PgPool,
+    me: &Account,
+    dogs: &[String],
+    dog_accounts: &std::collections::HashMap<String, Account>,
+    last_reconcile: &mut Option<chrono::NaiveDate>,
+) -> anyhow::Result<()> {
+    let now = chrono::Utc::now();
+    if *last_reconcile != Some(now.date_naive()) {
+        companions::reconcile(db, me, now).await?;
+        *last_reconcile = Some(now.date_naive());
+    }
+    companions::match_claims(db, now).await?;
+    companions::plan_copies(db, dogs).await?;
+    for _ in 0..10 {
+        companions::process_copies(db, me, dog_accounts).await?;
+        let open: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM uploads WHERE kind = 'copy'
+             AND status IN ('pending', 'job_started', 'uploaded', 'delete_pending')",
+        )
+        .fetch_one(db)
+        .await?;
+        if open == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
     Ok(())
 }
 

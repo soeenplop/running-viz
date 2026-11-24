@@ -24,6 +24,7 @@ async fn healthz_is_ok() {
         display: Display::new(&demo_stats(running_viz::display::today())),
         sync: Default::default(),
         webhook: None,
+        companions: None,
     })
     .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
     .await

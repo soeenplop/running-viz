@@ -24,6 +24,8 @@ pub struct Activity {
     pub start_time: Option<DateTime<Utc>>,
     #[serde(default)]
     pub end_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// Background ingestion job (`/jobs/{id}`).
@@ -141,6 +143,63 @@ impl Account {
     pub async fn activity(&self, id: &str) -> Result<Activity> {
         send(self.get(&format!("/activities/{id}"))).await
     }
+
+    /// The activity's current ETag (needed for `If-Match`), or `None` if it is gone.
+    pub async fn activity_etag(&self, id: &str) -> Result<Option<String>> {
+        let res = self
+            .get(&format!("/activities/{id}"))
+            .send()
+            .await
+            .context("endurain request failed")?;
+        if res.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !res.status().is_success() {
+            return Err(error(res).await.into());
+        }
+        res.headers()
+            .get("ETag")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| Some(v.to_owned()))
+            .context("endurain activity without ETag")
+    }
+
+    /// Sets name and type of an activity (fresh ETag first, so the write is never stale).
+    pub async fn rename(&self, id: &str, name: &str, activity_type: &str) -> Result<()> {
+        let etag = self
+            .activity_etag(id)
+            .await?
+            .context("activity to rename is gone")?;
+        let _: serde_json::Value = send(
+            self.http
+                .patch(format!("{}/activities/{id}", self.base))
+                .header("X-API-Key", &self.key)
+                .header("If-Match", etag)
+                .json(&serde_json::json!({ "name": name, "activity_type": activity_type })),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Deletes an activity; an activity that is already gone counts as deleted.
+    pub async fn delete(&self, id: &str) -> Result<()> {
+        let Some(etag) = self.activity_etag(id).await? else {
+            return Ok(());
+        };
+        let res = self
+            .http
+            .delete(format!("{}/activities/{id}", self.base))
+            .header("X-API-Key", &self.key)
+            .header("If-Match", etag)
+            .send()
+            .await
+            .context("endurain request failed")?;
+        if res.status().is_success() || res.status().as_u16() == 404 {
+            Ok(())
+        } else {
+            Err(error(res).await.into())
+        }
+    }
 }
 
 async fn send<T: serde::de::DeserializeOwned>(req: RequestBuilder) -> Result<T> {
@@ -161,6 +220,18 @@ async fn send<T: serde::de::DeserializeOwned>(req: RequestBuilder) -> Result<T> 
         .into());
     }
     res.json().await.context("unexpected endurain response")
+}
+
+/// Endurain errors are problem+json without secrets; keep only the status and title.
+async fn error(res: reqwest::Response) -> ApiError {
+    let status = res.status().as_u16();
+    let title = res
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|v| v["title"].as_str().map(str::to_owned))
+        .unwrap_or_default();
+    ApiError { status, title }
 }
 
 /// An HTTP error answer from Endurain (status + problem title, no body).

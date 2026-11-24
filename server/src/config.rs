@@ -10,6 +10,8 @@ pub struct Config {
     pub runners: Vec<RunnerConfig>,
     /// HealthFit import; `None` if the Dropbox variables are not set.
     pub dropbox: Option<crate::dropbox::DropboxConfig>,
+    /// Bearer token for `POST /api/companions` (the Shortcut); endpoint disabled if unset.
+    pub shortcut_token: Option<String>,
     /// Workouts that started (Europe/Berlin) before this date are not imported.
     pub import_since: chrono::NaiveDate,
 }
@@ -46,6 +48,9 @@ impl Config {
             endurain_url: required("ENDURAIN_URL")?,
             runners,
             dropbox: dropbox()?,
+            shortcut_token: std::env::var("SHORTCUT_TOKEN")
+                .ok()
+                .filter(|t| !t.trim().is_empty()),
             import_since: crate::import::parse_since(
                 std::env::var("DROPBOX_IMPORT_SINCE").ok().as_deref(),
             )?,
