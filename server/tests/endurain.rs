@@ -37,12 +37,18 @@ async fn fetches_name_goal_and_all_pages() {
         json!({ "name": "Sören", "username": "soeren" }),
     )
     .await;
-    mock(
-        &server,
-        "/api/v1/profile/goals",
-        json!({ "items": [{ "goal_distance": 200000 }], "total": 1 }),
-    )
-    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/profile/goals"))
+        .and(header("X-API-Key", "k"))
+        .and(query_param("interval", "monthly"))
+        .and(query_param("activity_type", "run"))
+        .and(query_param("goal_type", "distance"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({ "items": [{ "goal_distance": 200000 }], "total": 1 })),
+        )
+        .mount(&server)
+        .await;
     let page1: Vec<_> = (0..100)
         .map(|i| activity(i, "2026-12-01T07:00:00Z", 0.1))
         .collect();
