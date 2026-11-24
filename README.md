@@ -23,7 +23,7 @@ After every run, an Apple Watch–triggered Shortcut asks **"Who came along?"** 
 |---|---|---|
 | `server/` | Import, dog copies, rendering, API | Rust, Postgres |
 | `web/` | Fullscreen view of the rendered image | static web |
-| `firmware/` | Fetches the image and draws it on the panel | C++ / Arduino (ESP8266) |
+| `firmware/` | Fetches the image and draws it on the panel ([details](firmware/README.md)) | C++ / Arduino (ESP8266), PlatformIO |
 | `deploy/` | Endurain + server + web | Docker Compose, Dokploy |
 
 ## Domains
