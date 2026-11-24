@@ -21,20 +21,23 @@ API="$ENDURAIN_URL/api/v1"
 
 log() { echo "• $*" >&2; }
 upper() { tr '[:lower:]' '[:upper:]' <<<"$1"; }
-# curl that fails on HTTP errors and prints the error body to stderr; sends JSON by default
+# curl that fails on HTTP errors (error body to stderr, never the request data)
 call() {
-  local out ct=(-H 'content-type: application/json')
-  [[ " $* " == *" --form-string "* ]] && ct=()
-  if ! out=$(curl -sS --fail-with-body "${ct[@]}" "$@"); then
-    echo "request failed: ${*: -1}: $out" >&2
+  local out
+  if ! out=$(curl -sS --fail-with-body "$@"); then
+    echo "request failed: $out" >&2
     return 1
   fi
   printf '%s' "$out"
 }
+json() { call -H 'content-type: application/json' "$@"; }
+form_login() { # username password -> raw login response
+  call -X POST "$API/auth/login" -H 'X-Client-Type: web' \
+    --data-urlencode "username=$1" --data-urlencode "password=$2"
+}
 
 login() { # username password -> access token; fails if a password change is required
-  call -X POST "$API/auth/login" -H 'X-Client-Type: web' \
-    --form-string "username=$1" --form-string "password=$2" | jq -er 'select(.next_step == "tokens") | .access_token'
+  form_login "$1" "$2" | jq -er 'select(.next_step == "tokens") | .access_token'
 }
 
 etag() { # token url -> ETag of the resource
@@ -45,17 +48,16 @@ etag() { # token url -> ETag of the resource
 set_dog_password() { # user_id username new_password: admin sets a temporary password, dog sets the final one
   local tmp res token
   tmp="Tmp-$(openssl rand -hex 12)!"
-  call -X POST "$API/users/$1/password/change" -H "Authorization: Bearer $ADMIN" \
+  json -X POST "$API/users/$1/password/change" -H "Authorization: Bearer $ADMIN" \
     -d "$(jq -n --arg p "$tmp" --arg a "$ADMIN_PASSWORD" '{password: $p, step_up: {current_password: $a}}')" >/dev/null
-  res=$(call -X POST "$API/auth/login" -H 'X-Client-Type: web' \
-    --form-string "username=$2" --form-string "password=$tmp")
+  res=$(form_login "$2" "$tmp")
   if [[ $(jq -r .next_step <<<"$res") == password_change ]]; then
-    call -X POST "$API/auth/password-change" -H 'X-Client-Type: web' -d "$(jq -n \
+    json -X POST "$API/auth/password-change" -H 'X-Client-Type: web' -d "$(jq -n \
       --arg c "$(jq -er .password_change_challenge <<<"$res")" --arg p "$3" \
       '{password_change_challenge: $c, password: $p}')" >/dev/null
   else
     token=$(jq -er .access_token <<<"$res")
-    call -X POST "$API/profile/password/change" -H "Authorization: Bearer $token" \
+    json -X POST "$API/profile/password/change" -H "Authorization: Bearer $token" \
       -d "$(jq -n --arg p "$3" --arg t "$tmp" '{password: $p, step_up: {current_password: $t}}')" >/dev/null
   fi
 }
@@ -65,7 +67,7 @@ ensure_goal() { # token km
   total=$(call -H "Authorization: Bearer $1" \
     "$API/profile/goals?interval=monthly&activity_type=run&goal_type=distance" | jq -er '.total')
   if [[ "$total" == 0 ]]; then
-    call -X POST "$API/profile/goals" -H "Authorization: Bearer $1" \
+    json -X POST "$API/profile/goals" -H "Authorization: Bearer $1" \
       -d "{\"interval\":\"monthly\",\"activity_type\":\"run\",\"goal_type\":\"distance\",\"goal_distance\":$(($2 * 1000))}" >/dev/null
     log "  goal: $2 km/month"
   else
@@ -74,7 +76,7 @@ ensure_goal() { # token km
 }
 
 create_key() { # token password scopes-json -> key
-  call -X POST "$API/profile/api-keys" -H "Authorization: Bearer $1" \
+  json -X POST "$API/profile/api-keys" -H "Authorization: Bearer $1" \
     -d "$(jq -n --arg p "$2" --argjson s "$3" '{name: "running-viz", scopes: $s, step_up: {current_password: $p}}')" |
     jq -er .key
 }
@@ -82,7 +84,7 @@ create_key() { # token password scopes-json -> key
 # 1. Onboarding (fresh instance only)
 if [[ -n "${SETUP_TOKEN:-}" ]]; then
   log "onboarding admin $ADMIN_USERNAME"
-  call -X POST "$API/public/onboarding" -d "$(jq -n --arg n "${ADMIN_NAME:-$ADMIN_USERNAME}" \
+  json -X POST "$API/public/onboarding" -d "$(jq -n --arg n "${ADMIN_NAME:-$ADMIN_USERNAME}" \
     --arg u "$ADMIN_USERNAME" --arg e "${ADMIN_EMAIL:?ADMIN_EMAIL required with SETUP_TOKEN}" \
     --arg p "$ADMIN_PASSWORD" --arg t "$SETUP_TOKEN" \
     '{name: $n, username: $u, email: $e, password: $p, token: $t}')" >/dev/null
@@ -92,7 +94,7 @@ ADMIN=$(login "$ADMIN_USERNAME" "$ADMIN_PASSWORD")
 # 2. Longest allowed API key lifetime (10 years)
 settings=$(call -H "Authorization: Bearer $ADMIN" "$API/server-settings")
 if [[ $(jq -er .api_key_max_lifetime_days <<<"$settings") != 3650 ]]; then
-  call -X PUT "$API/server-settings" -H "Authorization: Bearer $ADMIN" \
+  json -X PUT "$API/server-settings" -H "Authorization: Bearer $ADMIN" \
     -H "If-Match: $(etag "$ADMIN" "$API/server-settings")" \
     -d "$(jq --arg p "$ADMIN_PASSWORD" 'del(.id, .version, .login_photo_set, .tileserver_api_key_set,
           .geocoding_api_key_set, .env_managed, .step_up_fields, .logs_viewer_enabled)
@@ -111,9 +113,10 @@ for dog in "${DOGS[@]}"; do
   log "$dog"
   pw_var="$(upper "$dog")_PASSWORD"
   pw="${!pw_var:-}"
-  id=$(call -H "Authorization: Bearer $ADMIN" "$API/users?username=$dog" | jq -er '.items[0].id // ""')
+  id=$(call -H "Authorization: Bearer $ADMIN" "$API/users?username=$dog" | jq -er 'if (.items | type) != "array" then error("bad user list")
+    elif (.items | length) == 0 then "" else .items[0].id | strings end')
   if [[ -z "$id" ]]; then
-    id=$(call -X POST "$API/users" -H "Authorization: Bearer $ADMIN" -d "$(jq -n --arg u "$dog" \
+    id=$(json -X POST "$API/users" -H "Authorization: Bearer $ADMIN" -d "$(jq -n --arg u "$dog" \
       --arg p "Tmp-$(openssl rand -hex 12)!" --arg n "$(upper "${dog:0:1}")${dog:1}" \
       --arg e "$dog@${DOG_EMAIL_DOMAIN:-example.com}" \
       '{name: $n, username: $u, email: $e, password: $p, preferred_language: "en", gender: "unspecified",
@@ -129,7 +132,7 @@ for dog in "${DOGS[@]}"; do
     T=$(login "$dog" "$pw")
   fi
   ensure_goal "$T" "$GOAL_KM_DOG"
-  call -X PATCH "$API/profile/privacy" -H "Authorization: Bearer $T" \
+  json -X PATCH "$API/profile/privacy" -H "Authorization: Bearer $T" \
     -H "If-Match: $(etag "$T" "$API/profile/privacy")" \
     -d '{"default_activity_visibility":"followers","hide_activity_hr":true,"hide_activity_power":true,"hide_activity_cadence":true}' >/dev/null
   log "  privacy: followers, hide HR/power/cadence"
