@@ -58,8 +58,7 @@ fn image(headers: &HeaderMap, etag: &str, content_type: &'static str, body: Vec<
     let matches = headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
-        .filter_map(|v| v.to_str().ok())
-        .any(|v| if_none_match(v, etag));
+        .any(|v| if_none_match(v.as_bytes(), etag.as_bytes()));
     if matches {
         return (StatusCode::NOT_MODIFIED, cache).into_response();
     }
@@ -73,21 +72,23 @@ fn image(headers: &HeaderMap, etag: &str, content_type: &'static str, body: Vec<
 
 /// Whether an `If-None-Match` value matches `etag` (weak comparison, RFC 9110 §13.1.2).
 /// Accepts `*` or a comma-separated list of `"tag"` / `W/"tag"`; malformed lists never match.
-fn if_none_match(value: &str, etag: &str) -> bool {
-    if value.trim() == "*" {
+fn if_none_match(value: &[u8], etag: &[u8]) -> bool {
+    if value.trim_ascii() == b"*" {
         return true;
     }
     let mut rest = value;
     loop {
-        rest = rest.trim_start_matches([' ', '\t', ',']);
+        while let [b' ' | b'\t' | b',', tail @ ..] = rest {
+            rest = tail;
+        }
         if rest.is_empty() {
             return false;
         }
-        rest = rest.strip_prefix("W/").unwrap_or(rest);
-        let Some(body) = rest.strip_prefix('"') else {
+        rest = rest.strip_prefix(b"W/").unwrap_or(rest);
+        let Some(body) = rest.strip_prefix(b"\"") else {
             return false;
         };
-        let Some(end) = body.find('"') else {
+        let Some(end) = body.iter().position(|&c| c == b'"') else {
             return false;
         };
         if &rest[..end + 2] == etag {
@@ -103,14 +104,15 @@ mod tests {
 
     #[test]
     fn if_none_match_parsing() {
-        let tag = "\"abc\"";
-        assert!(if_none_match("\"abc\"", tag));
-        assert!(if_none_match("W/\"abc\"", tag));
-        assert!(if_none_match("\"x\", W/\"abc\"", tag));
-        assert!(if_none_match("*", tag));
-        assert!(!if_none_match("\",*,\"", tag));
-        assert!(!if_none_match("\"abcd\"", tag));
-        assert!(!if_none_match("abc", tag));
-        assert!(!if_none_match("", tag));
+        let m = |v: &[u8]| if_none_match(v, b"\"abc\"");
+        assert!(m(b"\"abc\""));
+        assert!(m(b"W/\"abc\""));
+        assert!(m(b"\"x\", W/\"abc\""));
+        assert!(m(b"\"\xff\", W/\"abc\""));
+        assert!(m(b"*"));
+        assert!(!m(b"\",*,\""));
+        assert!(!m(b"\"abcd\""));
+        assert!(!m(b"abc"));
+        assert!(!m(b""));
     }
 }

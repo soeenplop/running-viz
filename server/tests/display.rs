@@ -75,11 +75,14 @@ fn demo_snapshot() {
     );
 }
 
-async fn get_with(inm: &str) -> (StatusCode, usize) {
+async fn get_with(inm: &[u8]) -> (StatusCode, usize) {
     let res = app()
         .oneshot(
             Request::get("/display.bin")
-                .header(header::IF_NONE_MATCH, inm)
+                .header(
+                    header::IF_NONE_MATCH,
+                    axum::http::HeaderValue::from_bytes(inm).unwrap(),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -96,10 +99,13 @@ async fn get_with(inm: &str) -> (StatusCode, usize) {
 async fn weak_and_unrelated_validators() {
     let etag = running_viz::display::Frame::new(&demo_stats(day())).etag;
     assert_eq!(
-        get_with(&format!("W/{etag}")).await,
+        get_with(format!("W/{etag}").as_bytes()).await,
         (StatusCode::NOT_MODIFIED, 0)
     );
-    assert_eq!(get_with("\",*,\"").await, (StatusCode::OK, BYTES));
+    assert_eq!(get_with(b"\",*,\"").await, (StatusCode::OK, BYTES));
+    let mut non_ascii = b"\"\xff\", W/".to_vec();
+    non_ascii.extend_from_slice(etag.as_bytes());
+    assert_eq!(get_with(&non_ascii).await, (StatusCode::NOT_MODIFIED, 0));
 }
 
 /// March 2026 starts on a Sunday: six calendar rows must all fit, incl. the 31st.
@@ -116,4 +122,7 @@ fn six_week_month_shows_last_day() {
         "today's cell of a 6-week month must be visible"
     );
     assert!(y + rh as u32 - 3 < 300);
+    // the highlighted cell's bottom row stays solid (no text pixel cuts through it)
+    let (cx, cy) = (8 + cw as u32, 160 + 5 * rh as u32 + rh as u32 - 3);
+    assert!((cx..cx + cw as u32 - 2).all(|px| img.is_black(px, cy)));
 }

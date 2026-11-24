@@ -191,7 +191,7 @@ fn calendar(b: &mut Bitmap, today: NaiveDate, daily: &[f64]) {
                 b,
                 &km(k),
                 x + w - 3,
-                y + h - 3,
+                y + h - 4,
                 Font::Header,
                 Alignment::Right,
                 color,
