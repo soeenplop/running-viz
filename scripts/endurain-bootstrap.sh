@@ -114,7 +114,8 @@ for dog in "${DOGS[@]}"; do
   pw_var="$(upper "$dog")_PASSWORD"
   pw="${!pw_var:-}"
   id=$(call -H "Authorization: Bearer $ADMIN" "$API/users?username=$dog" | jq -er 'if (.items | type) != "array" then error("bad user list")
-    elif (.items | length) == 0 then "" else .items[0].id | strings end')
+    elif (.items | length) == 0 then ""
+    else .items[0].id | if type == "string" and length > 0 then . else error("bad user id") end end')
   if [[ -z "$id" ]]; then
     id=$(json -X POST "$API/users" -H "Authorization: Bearer $ADMIN" -d "$(jq -n --arg u "$dog" \
       --arg p "Tmp-$(openssl rand -hex 12)!" --arg n "$(upper "${dog:0:1}")${dog:1}" \
