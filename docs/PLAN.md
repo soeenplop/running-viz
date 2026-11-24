@@ -148,7 +148,7 @@ One `index.html` (no build step), embedded into the server binary and served at 
 | 9 | `feat/firmware` | `feat(firmware): esp8266 e-paper client` |
 | 10 | `feat/dokploy` | `chore(deploy): dokploy deployment` (needs user, last) |
 
-Each PR: Conventional Commits, review by GPT-6.2 Astra in PR comments, squash-merge after `✅ Approved by GPT-6.2 Astra`.
+Each PR: Conventional Commits, review by GPT-6.2 Astra in PR comments, merge (merge commit, no squash) after `✅ Approved by GPT-6.2 Astra`.
 
 ## 6. Risks and open points
 
