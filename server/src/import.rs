@@ -247,8 +247,9 @@ pub async fn process_uploads(db: &PgPool, me: &Account) -> Result<Round> {
     for row in rows {
         let id: Uuid = row.get("id");
         match step(db, me, &row).await {
-            Ok(true) => round.runs_created += 1,
-            Ok(false) => {}
+            Ok(Step::RunCreated) => round.runs_created += 1,
+            Ok(Step::Progress) => {}
+            Ok(Step::NeedsAttention) => round.failed_steps += 1,
             Err(err) => {
                 round.failed_steps += 1;
                 let permanent = err
@@ -272,8 +273,16 @@ pub async fn process_uploads(db: &PgPool, me: &Account) -> Result<Round> {
     Ok(round)
 }
 
-/// One state transition. Returns `true` when a run was created.
-async fn step(db: &PgPool, me: &Account, row: &sqlx::postgres::PgRow) -> Result<bool> {
+/// What one state transition achieved.
+enum Step {
+    Progress,
+    RunCreated,
+    /// moved to `needs_attention` (counts as a failure of this round)
+    NeedsAttention,
+}
+
+/// One state transition.
+async fn step(db: &PgPool, me: &Account, row: &sqlx::postgres::PgRow) -> Result<Step> {
     let id: Uuid = row.get("id");
     let status: String = row.get("status");
     match status.as_str() {
@@ -293,7 +302,7 @@ async fn step(db: &PgPool, me: &Account, row: &sqlx::postgres::PgRow) -> Result<
             .bind(&job.id)
             .execute(db)
             .await?;
-            Ok(false)
+            Ok(Step::Progress)
         }
         "job_started" => {
             let job_id: String = row.get("job_id");
@@ -301,7 +310,7 @@ async fn step(db: &PgPool, me: &Account, row: &sqlx::postgres::PgRow) -> Result<
             match (job.status.as_str(), job.activity_ids.as_slice()) {
                 ("queued" | "running", _) => {
                     touch(db, id).await?;
-                    Ok(false)
+                    Ok(Step::Progress)
                 }
                 ("succeeded", [activity]) => {
                     sqlx::query(
@@ -326,7 +335,7 @@ async fn step(db: &PgPool, me: &Account, row: &sqlx::postgres::PgRow) -> Result<
                     .bind(job.error_code.clone())
                     .execute(db)
                     .await?;
-                    Ok(false)
+                    Ok(Step::NeedsAttention)
                 }
             }
         }
@@ -338,7 +347,7 @@ async fn step(db: &PgPool, me: &Account, row: &sqlx::postgres::PgRow) -> Result<
                     .await?;
             finish(db, me, id, &activity).await
         }
-        _ => Ok(false),
+        _ => Ok(Step::Progress),
     }
 }
 
@@ -353,7 +362,7 @@ async fn touch(db: &PgPool, id: Uuid) -> Result<()> {
 
 /// Records the run with Endurain's normalized facts (type, start, end, distance) and
 /// marks the upload done, in one transaction.
-async fn finish(db: &PgPool, me: &Account, upload_id: Uuid, activity_id: &str) -> Result<bool> {
+async fn finish(db: &PgPool, me: &Account, upload_id: Uuid, activity_id: &str) -> Result<Step> {
     let activity = me.activity(activity_id).await?;
     let mut tx = db.begin().await?;
     let inserted = sqlx::query(
@@ -378,7 +387,11 @@ async fn finish(db: &PgPool, me: &Account, upload_id: Uuid, activity_id: &str) -
         .execute(&mut *tx)
         .await?;
     tx.commit().await.context("commit run")?;
-    Ok(inserted == 1)
+    Ok(if inserted == 1 {
+        Step::RunCreated
+    } else {
+        Step::Progress
+    })
 }
 
 /// Endurain stores the uploaded file name; keep it ASCII and free of path characters.
