@@ -420,9 +420,13 @@ async fn ambiguous_or_failed_jobs_need_attention() {
             .mount(&server)
             .await;
         let id = queued_upload(&db, "job_started", Some("j")).await;
-        import::process_uploads(&db, &account(&server))
+        let round = import::process_uploads(&db, &account(&server))
             .await
             .unwrap();
+        assert_eq!(
+            round.failed_steps, 1,
+            "the failure is reported by this round"
+        );
         assert_eq!(status(&db, id).await, "needs_attention");
         let raw: Value = sqlx::query_scalar("SELECT raw_job FROM uploads WHERE id = $1")
             .bind(id)
@@ -484,5 +488,29 @@ async fn dropbox_outage_does_not_stop_uploads() {
     let out = import::run(&db, &dropbox(&dbx_server), &account(&server), since()).await;
     assert!(out.fetch_error.is_some());
     assert_eq!(out.runs_created, 1);
+    assert_eq!(status(&db, id).await, "done");
+}
+
+/// An expired key (401) must not strand uploads: once the key works again, they finish.
+#[tokio::test]
+async fn auth_failure_is_retried() {
+    let Some(db) = fresh_db().await else { return };
+    let server = endurain().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/activities/upload"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(json!({ "title": "Unauthorized" })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let me = account(&server);
+    let id = queued_upload(&db, "pending", None).await;
+
+    let round = import::process_uploads(&db, &me).await.unwrap();
+    assert_eq!(round.failed_steps, 1);
+    assert_eq!(status(&db, id).await, "pending");
+    for _ in 0..3 {
+        import::process_uploads(&db, &me).await.unwrap();
+    }
     assert_eq!(status(&db, id).await, "done");
 }
