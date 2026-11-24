@@ -1,5 +1,11 @@
 use anyhow::Result;
-use running_viz::{AppState, MIGRATOR, config::Config, http};
+use running_viz::{
+    AppState, MIGRATOR,
+    config::Config,
+    display::{self, Display},
+    http,
+    render::demo_stats,
+};
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -16,7 +22,18 @@ async fn main() -> Result<()> {
         .await?;
     MIGRATOR.run(&db).await?;
 
-    let app = http::router(AppState { db });
+    // Demo data until the Endurain stats are wired in; re-rendered so the date stays current.
+    let display = Display::new(&demo_stats(display::today()));
+    let refresh = display.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+        loop {
+            tick.tick().await;
+            refresh.update(&demo_stats(display::today()));
+        }
+    });
+
+    let app = http::router(AppState { db, display });
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", config.port)).await?;
     tracing::info!(port = config.port, "listening");
     axum::serve(listener, app)
