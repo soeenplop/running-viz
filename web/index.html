@@ -19,17 +19,27 @@
 <body>
 <img id="display" src="/display.png" alt="Lauf-Challenge">
 <script>
-  // Reload the image every minute; the server answers 304 when nothing changed.
+  // Reload the image every 5 minutes; the server answers 304 when nothing changed.
+  // The new image is decoded off-screen first, so a bad response never replaces a good one.
   const img = document.getElementById("display");
+  let shownUrl = null;
   setInterval(async () => {
+    let url = null;
     try {
       const res = await fetch("/display.png", { cache: "no-cache" });
       if (!res.ok) return;
-      const url = URL.createObjectURL(await res.blob());
-      img.onload = () => URL.revokeObjectURL(url);
+      url = URL.createObjectURL(await res.blob());
+      const next = new Image();
+      next.src = url;
+      await next.decode();
       img.src = url;
-    } catch { /* offline: keep the last image */ }
-  }, 60_000);
+      if (shownUrl) URL.revokeObjectURL(shownUrl);
+      shownUrl = url;
+    } catch {
+      // offline or broken image: keep the current one
+      if (url) URL.revokeObjectURL(url);
+    }
+  }, 300_000);
 
   // Click/tap toggles fullscreen.
   document.body.addEventListener("click", () => {
