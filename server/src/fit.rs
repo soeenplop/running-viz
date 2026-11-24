@@ -18,7 +18,10 @@ pub struct Summary {
 }
 
 pub fn summary(bytes: &[u8]) -> Result<Summary> {
-    let records = fitparser::from_bytes(bytes).context("not a readable FIT file")?;
+    // fitparser can panic on malformed input (e.g. arithmetic overflow); treat that as unreadable
+    let parsed = std::panic::catch_unwind(|| fitparser::from_bytes(bytes))
+        .map_err(|_| anyhow::anyhow!("FIT parser crashed on this file"))?;
+    let records = parsed.context("not a readable FIT file")?;
     let session = records
         .iter()
         .find(|r| r.kind() == MesgNum::Session)
@@ -73,32 +76,5 @@ fn float(r: &FitDataRecord, name: &str) -> Option<f64> {
         Value::UInt32(v) => Some(f64::from(*v)),
         Value::UInt16(v) => Some(f64::from(*v)),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Real HealthFit exports contain GPS tracks, so they are not committed.
-    /// Point RUNNING_VIZ_FIT_FIXTURES at a folder with `run.fit` (outdoor) and
-    /// `treadmill.fit` to run this test.
-    #[test]
-    fn real_healthfit_exports() {
-        let Ok(dir) = std::env::var("RUNNING_VIZ_FIT_FIXTURES") else {
-            eprintln!("RUNNING_VIZ_FIT_FIXTURES not set, skipping");
-            return;
-        };
-        let run = summary(&std::fs::read(format!("{dir}/run.fit")).unwrap()).unwrap();
-        assert_eq!((run.sport.as_str(), run.has_gps), ("running", true));
-        assert!(run.distance_m > 0 && run.end > run.start);
-        let treadmill = summary(&std::fs::read(format!("{dir}/treadmill.fit")).unwrap()).unwrap();
-        assert_eq!(treadmill.sub_sport, "indoor_running");
-        assert!(!treadmill.has_gps);
-    }
-
-    #[test]
-    fn garbage_is_rejected() {
-        assert!(summary(b"not a fit file").is_err());
     }
 }

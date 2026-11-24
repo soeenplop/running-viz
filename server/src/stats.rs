@@ -137,6 +137,7 @@ mod tests {
             distance: (km * 1000.0) as i64,
             total_timer_time: Some(secs),
             start_time: Some(start.parse().unwrap()),
+            end_time: None,
         }
     }
 

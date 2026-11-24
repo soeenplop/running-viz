@@ -10,8 +10,8 @@ pub struct Config {
     pub runners: Vec<RunnerConfig>,
     /// HealthFit import; `None` if the Dropbox variables are not set.
     pub dropbox: Option<crate::dropbox::DropboxConfig>,
-    /// Workouts that started before this date are not imported.
-    pub import_since: Option<chrono::NaiveDate>,
+    /// Workouts that started (Europe/Berlin) before this date are not imported.
+    pub import_since: chrono::NaiveDate,
 }
 
 #[derive(Clone)]
