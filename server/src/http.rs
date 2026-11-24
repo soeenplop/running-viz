@@ -56,9 +56,10 @@ fn image(headers: &HeaderMap, etag: &str, content_type: &'static str, body: Vec<
         (header::CACHE_CONTROL, HeaderValue::from_static("no-cache")),
     ];
     let matches = headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"));
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| if_none_match(v, etag));
     if matches {
         return (StatusCode::NOT_MODIFIED, cache).into_response();
     }
@@ -68,4 +69,48 @@ fn image(headers: &HeaderMap, etag: &str, content_type: &'static str, body: Vec<
         body,
     )
         .into_response()
+}
+
+/// Whether an `If-None-Match` value matches `etag` (weak comparison, RFC 9110 §13.1.2).
+/// Accepts `*` or a comma-separated list of `"tag"` / `W/"tag"`; malformed lists never match.
+fn if_none_match(value: &str, etag: &str) -> bool {
+    if value.trim() == "*" {
+        return true;
+    }
+    let mut rest = value;
+    loop {
+        rest = rest.trim_start_matches([' ', '\t', ',']);
+        if rest.is_empty() {
+            return false;
+        }
+        rest = rest.strip_prefix("W/").unwrap_or(rest);
+        let Some(body) = rest.strip_prefix('"') else {
+            return false;
+        };
+        let Some(end) = body.find('"') else {
+            return false;
+        };
+        if &rest[..end + 2] == etag {
+            return true;
+        }
+        rest = &body[end + 1..];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::if_none_match;
+
+    #[test]
+    fn if_none_match_parsing() {
+        let tag = "\"abc\"";
+        assert!(if_none_match("\"abc\"", tag));
+        assert!(if_none_match("W/\"abc\"", tag));
+        assert!(if_none_match("\"x\", W/\"abc\"", tag));
+        assert!(if_none_match("*", tag));
+        assert!(!if_none_match("\",*,\"", tag));
+        assert!(!if_none_match("\"abcd\"", tag));
+        assert!(!if_none_match("abc", tag));
+        assert!(!if_none_match("", tag));
+    }
 }
