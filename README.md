@@ -38,6 +38,16 @@ After every run, an Apple Watch–triggered Shortcut asks **"Who came along?"** 
 
 See [docs/setup.md](docs/setup.md): start Endurain with Docker Compose and create all accounts, goals and API keys with one script.
 
+## Development
+
+```sh
+cd server
+cargo test                      # unit tests
+TEST_DATABASE_URL=postgres://… cargo test   # + database tests
+```
+
+The server runs migrations on startup and exposes `GET /healthz`.
+
 ## Status
 
 🚧 Work in progress. See [docs/PLAN.md](docs/PLAN.md) for the roadmap.
