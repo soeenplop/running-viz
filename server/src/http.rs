@@ -11,10 +11,16 @@ use crate::AppState;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(index))
         .route("/healthz", get(healthz))
         .route("/display.bin", get(display_bin))
         .route("/display.png", get(display_png))
         .with_state(state)
+}
+
+/// Fullscreen page showing the display image (web/index.html, embedded at build time).
+async fn index() -> axum::response::Html<&'static str> {
+    axum::response::Html(include_str!("../../web/index.html"))
 }
 
 /// Liveness: the process runs and the database answers.
