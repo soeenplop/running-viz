@@ -26,11 +26,12 @@ Then one script sets everything up: the admin (me), the dog accounts `nanuq` and
 ```sh
 # still in deploy/
 ENDURAIN_URL=http://localhost:8080 \
-SETUP_TOKEN='<token>' ADMIN_NAME='Soeren' ADMIN_EMAIL='<email>' \
+SETUP_TOKEN='<token>' ADMIN_NAME='Sören' ADMIN_EMAIL='<email>' \
 ADMIN_USERNAME=soeren ADMIN_PASSWORD='<password>' \
 ../scripts/endurain-bootstrap.sh >> .env
 ```
 
+- The display shows each account's Endurain profile name (so `ADMIN_NAME` is what you see on the display).
 - The script appends `ENDURAIN_KEY_SOEREN`, `ENDURAIN_KEY_NANUQ`, `ENDURAIN_KEY_ANORI` and the generated dog passwords to `.env`.
 - It is safe to re-run, even after an interruption. Existing users and goals are kept, and each run creates new API keys (remove the old lines from `.env`). Pass `NANUQ_PASSWORD` / `ANORI_PASSWORD` to keep the dogs' passwords; otherwise, or if they don't work, the admin sets new ones and the script prints them.
 - If a request fails, the script stops with a non-zero exit code and writes nothing for that step.

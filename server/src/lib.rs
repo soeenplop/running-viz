@@ -1,7 +1,9 @@
 pub mod config;
 pub mod display;
+pub mod endurain;
 pub mod http;
 pub mod render;
+pub mod stats;
 
 use sqlx::PgPool;
 

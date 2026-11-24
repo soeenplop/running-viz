@@ -3,8 +3,8 @@ use running_viz::{
     AppState, MIGRATOR,
     config::Config,
     display::{self, Display},
-    http,
-    render::demo_stats,
+    endurain::Account,
+    http, stats,
 };
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
@@ -22,14 +22,32 @@ async fn main() -> Result<()> {
         .await?;
     MIGRATOR.run(&db).await?;
 
-    // Demo data until the Endurain stats are wired in; re-rendered so the date stays current.
-    let display = Display::new(&demo_stats(display::today()));
+    // Accounts: me first, then the dogs.
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let accounts: Vec<Account> = config
+        .runners
+        .iter()
+        .map(|r| Account::new(client.clone(), &config.endurain_url, &r.api_key))
+        .collect();
+    let names: Vec<String> = config
+        .runners
+        .iter()
+        .map(|r| capitalize(&r.username))
+        .collect();
+
+    // Show zeros until the first fetch succeeds; afterwards keep the last good stats on errors.
+    let display = Display::new(&stats::empty(&names, display::today()));
     let refresh = display.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
         loop {
             tick.tick().await;
-            refresh.update(&demo_stats(display::today()));
+            match stats::fetch(&accounts[0], &accounts[1..], display::today()).await {
+                Ok(s) => refresh.update(&s),
+                Err(err) => tracing::warn!("stats refresh failed: {err:#}"),
+            }
         }
     });
 
@@ -40,6 +58,13 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 async fn shutdown() {
