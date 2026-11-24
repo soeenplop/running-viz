@@ -52,6 +52,12 @@ services:
       ENDURAIN_KEY_SOEREN: ${ENDURAIN_KEY_SOEREN:-}
       ENDURAIN_KEY_NANUQ: ${ENDURAIN_KEY_NANUQ:-}
       ENDURAIN_KEY_ANORI: ${ENDURAIN_KEY_ANORI:-}
+      # HealthFit import (optional; see docs/setup.md)
+      DROPBOX_APP_KEY: ${DROPBOX_APP_KEY:-}
+      DROPBOX_APP_SECRET: ${DROPBOX_APP_SECRET:-}
+      DROPBOX_REFRESH_TOKEN: ${DROPBOX_REFRESH_TOKEN:-}
+      DROPBOX_FOLDER: ${DROPBOX_FOLDER:-/Apps/HealthFitExporter}
+      DROPBOX_IMPORT_SINCE: ${DROPBOX_IMPORT_SINCE:-2026-11-01}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       db:

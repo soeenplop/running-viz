@@ -39,7 +39,29 @@ ADMIN_USERNAME=soeren ADMIN_PASSWORD='<password>' \
 - If a request fails, the script stops with a non-zero exit code and writes nothing for that step.
 - To see the dogs' runs in your feed, follow `nanuq` and `anori` in the Endurain UI and accept the requests in their accounts.
 
-## 3. API key renewal
+## 3. HealthFit import (Dropbox)
+
+HealthFit exports every workout as a FIT file to Dropbox (`/Apps/HealthFitExporter`). The server reads that folder.
+
+1. Create an app in the [Dropbox App Console](https://www.dropbox.com/developers/apps):
+   - access type **Full Dropbox** (an app-folder app cannot see HealthFit's folder);
+   - under **Permissions**, enable `files.metadata.read` and `files.content.read` and click **Submit**.
+2. Get a refresh token once. Open this URL with your app key, allow access, and copy the code:
+   `https://www.dropbox.com/oauth2/authorize?client_id=<APP_KEY>&response_type=code&token_access_type=offline`
+   ```sh
+   curl https://api.dropboxapi.com/oauth2/token -d grant_type=authorization_code \
+     -d code='<CODE>' -u '<APP_KEY>:<APP_SECRET>'
+   ```
+   The response must list both scopes under `scope`; otherwise submit the permissions and repeat.
+3. Add to `deploy/.env`: `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`
+   (optional: `DROPBOX_FOLDER`, default `/Apps/HealthFitExporter`; `DROPBOX_IMPORT_SINCE`, default `2026-11-01`).
+4. Optional, after deployment: under **Webhooks** in the App Console, add
+   `https://running-api.soeenplop.dev/dropbox/webhook`. New runs then show up within seconds;
+   without it the server checks every 5 minutes.
+
+What the import does: every new FIT file is uploaded to my Endurain account. Files from before `DROPBOX_IMPORT_SINCE`, unreadable files, and second exports of the same workout (same start ±60 s) are skipped and remembered, so they are not checked again. Uploads that Endurain answers ambiguously are marked `needs_attention` in the `uploads` table and left alone.
+
+## 4. API key renewal
 
 Keys are valid for up to 10 years (the script raises the server limit). To rotate a key:
 1. Create a new key in Endurain (Settings → Security → API keys).

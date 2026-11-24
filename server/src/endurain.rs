@@ -24,6 +24,17 @@ pub struct Activity {
     pub start_time: Option<DateTime<Utc>>,
 }
 
+/// Background ingestion job (`/jobs/{id}`).
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+pub struct Job {
+    pub id: String,
+    /// queued | running | succeeded | failed
+    pub status: String,
+    #[serde(default)]
+    pub activity_ids: Vec<String>,
+    pub error_code: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct Page<T> {
     items: Vec<T>,
@@ -95,6 +106,31 @@ impl Account {
             }
         }
         Ok(all)
+    }
+}
+
+impl Account {
+    /// Starts an upload job. Replaying the same `idempotency_key` returns the original job.
+    pub async fn upload(
+        &self,
+        filename: &str,
+        bytes: Vec<u8>,
+        idempotency_key: &str,
+    ) -> Result<Job> {
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(filename.to_owned());
+        let form = reqwest::multipart::Form::new().part("file", part);
+        send(
+            self.http
+                .post(format!("{}/activities/upload", self.base))
+                .header("X-API-Key", &self.key)
+                .header("Idempotency-Key", idempotency_key)
+                .multipart(form),
+        )
+        .await
+    }
+
+    pub async fn job(&self, id: &str) -> Result<Job> {
+        send(self.get(&format!("/jobs/{id}"))).await
     }
 }
 

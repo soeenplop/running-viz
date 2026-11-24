@@ -19,11 +19,17 @@ pub struct Snapshot {
     pub last_success: Option<DateTime<Utc>>,
     /// Set while the latest refresh failed (no secrets: status + title only).
     pub last_error: Option<String>,
+    /// Set while the latest Dropbox import failed.
+    pub import_error: Option<String>,
 }
 
 impl SyncStatus {
     pub fn snapshot(&self) -> Snapshot {
         self.0.read().expect("sync lock").clone()
+    }
+
+    pub fn set_import_error(&self, err: Option<String>) {
+        self.set(|st| st.import_error = err);
     }
 
     fn set(&self, f: impl FnOnce(&mut Snapshot)) {
