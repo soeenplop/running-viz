@@ -129,16 +129,23 @@ static bool readExactly(WiFiClient& c, uint8_t* buf, size_t len, uint32_t deadli
   return true;
 }
 
-// Reads one header line (without CRLF) before `deadline`; false on timeout or close.
+// Reads one header line (without CRLF) before `deadline`. Fails on timeout, close, a
+// line longer than 256 bytes or a CR that is not followed by LF (malformed response).
 static bool readLine(WiFiClient& c, String& line, uint32_t deadline) {
   line = "";
+  bool cr = false;
   while (true) {
     uint8_t b;
     if (!readExactly(c, &b, 1, deadline)) return false;
-    if (b == '\n') break;
-    if (b != '\r' && line.length() < 256) line += static_cast<char>(b);
+    if (cr) return b == '\n';
+    if (b == '\r') {
+      cr = true;
+      continue;
+    }
+    if (b == '\n') return true;
+    if (line.length() >= 256) return false;
+    line += static_cast<char>(b);
   }
-  return true;
 }
 
 struct Response {
