@@ -10,8 +10,6 @@ pub struct Config {
     pub runners: Vec<RunnerConfig>,
     /// HealthFit import; `None` if the Dropbox variables are not set.
     pub dropbox: Option<crate::dropbox::DropboxConfig>,
-    /// SparkyFitness base URL; the mirror is off if unset.
-    pub sparky_url: Option<String>,
     /// Bearer token for `POST /api/companions` (the Shortcut); endpoint disabled if unset.
     pub shortcut_token: Option<String>,
     /// Workouts that started (Europe/Berlin) before this date are not imported.
@@ -22,8 +20,6 @@ pub struct Config {
 pub struct RunnerConfig {
     pub username: String,
     pub api_key: String,
-    /// Optional SparkyFitness API key (`SPARKY_KEY_<NAME>`).
-    pub sparky_key: Option<String>,
 }
 
 impl Config {
@@ -37,7 +33,6 @@ impl Config {
                 Ok(RunnerConfig {
                     username: n.to_owned(),
                     api_key: required(&format!("ENDURAIN_KEY_{}", n.to_uppercase()))?,
-                    sparky_key: optional(&format!("SPARKY_KEY_{}", n.to_uppercase())),
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -53,7 +48,6 @@ impl Config {
             endurain_url: required("ENDURAIN_URL")?,
             runners,
             dropbox: dropbox()?,
-            sparky_url: optional("SPARKY_URL"),
             shortcut_token: std::env::var("SHORTCUT_TOKEN")
                 .ok()
                 .filter(|t| !t.trim().is_empty()),
@@ -85,10 +79,6 @@ fn dropbox() -> Result<Option<crate::dropbox::DropboxConfig>> {
             "set all of DROPBOX_APP_KEY, DROPBOX_APP_SECRET and DROPBOX_REFRESH_TOKEN, or none"
         ),
     }
-}
-
-fn optional(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.trim().is_empty())
 }
 
 fn required(name: &str) -> Result<String> {

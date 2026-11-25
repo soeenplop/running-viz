@@ -8,7 +8,6 @@ pub mod gpx;
 pub mod http;
 pub mod import;
 pub mod render;
-pub mod sparky;
 pub mod stats;
 pub mod sync;
 

@@ -5,7 +5,7 @@ use running_viz::{
     display::{self, Display},
     dropbox::Dropbox,
     endurain::Account,
-    http, import, sparky, stats,
+    http, import, stats,
     sync::{self, SyncStatus},
 };
 use sqlx::postgres::PgPoolOptions;
@@ -74,46 +74,6 @@ async fn main() -> Result<()> {
         app_secret: c.app_secret.clone(),
         trigger: trigger.clone(),
     });
-
-    // Optional SparkyFitness mirror: (account name, dog or None for me, account).
-    let sparky_accounts: Vec<(String, Option<String>, sparky::SparkyAccount)> =
-        match &config.sparky_url {
-            Some(url) => config
-                .runners
-                .iter()
-                .enumerate()
-                .filter_map(|(i, r)| {
-                    let key = r.sparky_key.as_ref()?;
-                    let dog = (i > 0).then(|| r.username.clone());
-                    Some((
-                        r.username.clone(),
-                        dog,
-                        sparky::SparkyAccount::new(client.clone(), url, key),
-                    ))
-                })
-                .collect(),
-            None => Vec::new(),
-        };
-    if sparky_accounts.is_empty() {
-        tracing::info!("SparkyFitness mirror off (SPARKY_URL / SPARKY_KEY_* not set)");
-    }
-
-    // The optional mirror runs in its own task, so a slow SparkyFitness never delays
-    // the import, the dog copies or the display (one pass at a time, every 5 minutes).
-    if !sparky_accounts.is_empty() {
-        let mirror_db = db.clone();
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
-            loop {
-                tick.tick().await;
-                if let Err(err) =
-                    sparky::mirror(&mirror_db, &sparky_accounts, chrono::Utc::now()).await
-                {
-                    tracing::warn!("sparkyfitness mirror failed: {err:#}");
-                }
-            }
-        });
-    }
 
     // Sync loop: every 5 minutes, or right away when the Dropbox webhook fires.
     let (loop_db, loop_display, loop_status, since) = (
