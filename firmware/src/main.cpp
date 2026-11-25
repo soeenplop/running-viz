@@ -80,6 +80,22 @@ static void sleepCycle() {
   for (;;) delay(1000);
 }
 
+// Hard cut-off: whatever is blocking (DNS, TLS, panel BUSY wait), the wake ends when it fires.
+static void cutoff() {
+#ifdef NO_DEEP_SLEEP
+  rtc.cooldown = 1;  // a timer callback must not block: restart and wait on next boot
+  saveState();
+  ESP.restart();
+#else
+  ESP.deepSleep(SLEEP_US);
+#endif
+}
+
+static void armCutoff(uint32_t inMs) {
+  hardLimit.detach();
+  hardLimit.once_ms(inMs > 0 ? inMs : 1, cutoff);
+}
+
 static uint32_t remaining(uint32_t deadline) {
   const uint32_t now = millis();
   return now >= deadline ? 0 : deadline - now;
@@ -127,9 +143,20 @@ static bool readLine(WiFiClient& c, String& line, uint32_t deadline) {
 
 struct Response {
   int status = 0;
-  long length = -1;
+  long length = -1;     // -1: missing, invalid or contradictory
+  bool lengthSeen = false;
+  bool encoded = false;  // any Transfer-Encoding (e.g. chunked): not supported
   String etag;
 };
+
+// A Content-Length value: digits only, no sign, no trailing garbage.
+static long parseLength(const String& v) {
+  if (v.isEmpty() || v.length() > 9) return -1;
+  for (size_t i = 0; i < v.length(); ++i) {
+    if (!isDigit(v[i])) return -1;
+  }
+  return v.toInt();
+}
 
 // Minimal HTTP/1.1 GET: every byte of the status line and headers counts against the
 // same absolute deadline (unlike HTTPClient, whose per-line timeouts restart).
@@ -153,9 +180,14 @@ static bool get(WiFiClient& c, uint32_t deadline, Response& r) {
     name.toLowerCase();
     String value = line.substring(colon + 1);
     value.trim();
-    if (name == "content-length") r.length = value.toInt();
+    if (name == "content-length") {
+      const long len = parseLength(value);
+      // a repeated header must agree with the first one
+      r.length = (r.lengthSeen && len != r.length) ? -1 : len;
+      r.lengthSeen = true;
+    }
     if (name == "etag") r.etag = value;
-    if (name == "transfer-encoding") r.length = -1;  // chunked: not supported
+    if (name == "transfer-encoding") r.encoded = true;
   }
   return false;
 }
@@ -170,16 +202,7 @@ void setup() {
     sleepCycle();
   }
 #endif
-  // Hard cut-off at the wake budget, whatever is blocking (TLS, panel BUSY wait).
-  hardLimit.once_ms(WAKE_BUDGET_MS, [] {
-#ifdef NO_DEEP_SLEEP
-    rtc.cooldown = 1;  // a timer callback must not block: restart and wait on next boot
-    saveState();
-    ESP.restart();
-#else
-    ESP.deepSleep(SLEEP_US);
-#endif
-  });
+  armCutoff(WAKE_BUDGET_MS);
   Serial.begin(115200);
   Serial.println("\nrunning-viz");
 
@@ -192,6 +215,9 @@ void setup() {
   // man-in-the-middle is a wrong picture (decision in docs/PLAN.md).
   BearSSL::WiFiClientSecure client;
   client.setInsecure();
+  // DNS, TCP and the TLS handshake have their own internal timeouts: the cut-off moves
+  // to the download deadline while the network is used, then back to the wake budget.
+  armCutoff(remaining(httpDeadline));
   Response res;
   if (!get(client, httpDeadline, res)) sleepNow("http failed or too slow");
   if (res.status == 304) sleepNow("unchanged");
@@ -199,7 +225,7 @@ void setup() {
     Serial.printf("http %d\n", res.status);
     sleepNow("http error");
   }
-  if (res.length != (long)FRAME_BYTES) sleepNow("unexpected size");
+  if (res.encoded || res.length != (long)FRAME_BYTES) sleepNow("unexpected framing or size");
 
   // Stream the frame into the panel RAM chunk by chunk; nothing is shown until refresh().
   // initial = false: no clearing refresh on the first write, so an incomplete download
@@ -215,6 +241,7 @@ void setup() {
     display.epd2.writeImage(chunk, 0, y, WIDTH, rows);
   }
   client.stop();
+  armCutoff(remaining(WAKE_BUDGET_MS));
 
   if (remaining(WAKE_BUDGET_MS) < REFRESH_RESERVE_MS) {
     display.hibernate();
