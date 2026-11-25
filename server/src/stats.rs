@@ -67,7 +67,7 @@ pub async fn runner(
     types: &[&str],
     default_goal_km: f64,
     today: NaiveDate,
-) -> Result<(Runner, Month)> {
+) -> Result<Runner> {
     let first = today.with_day(1).expect("day 1");
     // one day of margin on both sides: Endurain filters by its own date, we by Europe/Berlin
     let from = first - Duration::days(1);
@@ -82,22 +82,22 @@ pub async fn runner(
             .await?
             .unwrap_or(default_goal_km),
         pace_s_per_km: month.pace_s_per_km,
+        daily_km: month.daily_km,
     };
-    Ok((runner, month))
+    Ok(runner)
 }
 
 /// Fetches everything for the display: me plus the dogs.
 pub async fn fetch(me: &Account, dogs: &[Account], today: NaiveDate) -> Result<Stats> {
-    let (me, my_month) = runner(me, MY_RUN_TYPES, 200.0, today).await?;
+    let me = runner(me, MY_RUN_TYPES, 200.0, today).await?;
     let mut dog_runners = Vec::new();
     for dog in dogs {
-        dog_runners.push(runner(dog, DOG_RUN_TYPES, 100.0, today).await?.0);
+        dog_runners.push(runner(dog, DOG_RUN_TYPES, 100.0, today).await?);
     }
     Ok(Stats {
         today,
         me,
         dogs: dog_runners,
-        my_daily_km: my_month.daily_km,
     })
 }
 
@@ -108,12 +108,12 @@ pub fn empty(names: &[String], today: NaiveDate) -> Stats {
         km: 0.0,
         goal_km,
         pace_s_per_km: None,
+        daily_km: vec![0.0; days_in_month(today) as usize],
     };
     Stats {
         today,
         me: runner(names.first().map(String::as_str).unwrap_or(""), 200.0),
         dogs: names.iter().skip(1).map(|n| runner(n, 100.0)).collect(),
-        my_daily_km: vec![0.0; days_in_month(today) as usize],
     }
 }
 

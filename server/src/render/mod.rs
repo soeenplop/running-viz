@@ -22,6 +22,8 @@ pub struct Runner {
     pub goal_km: f64,
     /// Average pace in seconds per km (`None` without runs).
     pub pace_s_per_km: Option<u32>,
+    /// km per day of the month, index 0 = day 1.
+    pub daily_km: Vec<f64>,
 }
 
 /// Everything the display shows.
@@ -30,8 +32,6 @@ pub struct Stats {
     pub today: NaiveDate,
     pub me: Runner,
     pub dogs: Vec<Runner>,
-    /// My km per day of the month, index 0 = day 1.
-    pub my_daily_km: Vec<f64>,
 }
 
 const MONTHS: [&str; 12] = [
@@ -61,7 +61,7 @@ pub fn render(stats: &Stats) -> Bitmap {
     for (i, dog) in stats.dogs.iter().take(2).enumerate() {
         dog_block(&mut b, dog, 44 + i as i32 * 50, month);
     }
-    calendar(&mut b, stats.today, &stats.my_daily_km);
+    calendar(&mut b, stats);
     b
 }
 
@@ -152,7 +152,11 @@ fn dog_block(b: &mut Bitmap, r: &Runner, y: i32, month: f64) {
     bar(b, 272, y + 28, 120, 10, r.km / r.goal_km, month);
 }
 
-fn calendar(b: &mut Bitmap, today: NaiveDate, daily: &[f64]) {
+fn calendar(b: &mut Bitmap, stats: &Stats) {
+    let today = stats.today;
+    let runners: Vec<&Runner> = std::iter::once(&stats.me)
+        .chain(stats.dogs.iter().take(2))
+        .collect();
     fill(b, 0, 142, 400, 2, INK);
     let first = today.with_day(1).unwrap();
     let offset = first.weekday().num_days_from_monday();
@@ -186,13 +190,62 @@ fn calendar(b: &mut Bitmap, today: NaiveDate, daily: &[f64]) {
             Alignment::Left,
             color,
         );
-        let k = daily.get(day as usize - 1).copied().unwrap_or(0.0);
-        if past && k > 0.0 {
+        if !past {
+            continue;
+        }
+        let ran = |r: &Runner| r.daily_km.get(day as usize - 1).copied().unwrap_or(0.0);
+        // who ran, below the day number: S N A, each letter in its own slot
+        let base = y + h - 3;
+        for (i, r) in runners.iter().enumerate() {
+            if ran(r) > 0.0 {
+                let initial: String = r
+                    .name
+                    .chars()
+                    .take(1)
+                    .flat_map(char::to_uppercase)
+                    .collect();
+                text(
+                    b,
+                    &initial,
+                    x + 4 + 6 * i as i32,
+                    base,
+                    Font::Tiny,
+                    Alignment::Left,
+                    color,
+                );
+            }
+        }
+        // my km as "10" with a small "5" beside it, tops aligned (digits are 12 px and 8 px tall)
+        let k = ran(&stats.me);
+        if k > 0.0 {
+            let tenths = (k * 10.0).round() as i64;
+            let mut right = x + w - 3;
+            // 100 km and more: no decimal, or the integer runs into the initials
+            if tenths < 1000 {
+                let decimal = (tenths % 10).to_string();
+                text(
+                    b,
+                    &decimal,
+                    right,
+                    base - 4,
+                    Font::Small,
+                    Alignment::Right,
+                    color,
+                );
+                right -= width(&decimal, Font::Small) + 2;
+            }
+            // round when the decimal is dropped (108.5 -> 109)
+            let whole = if tenths < 1000 {
+                tenths / 10
+            } else {
+                (tenths + 5) / 10
+            }
+            .to_string();
             text(
                 b,
-                &km(k),
-                x + w - 3,
-                y + h - 4,
+                &whole,
+                right,
+                base,
                 Font::Header,
                 Alignment::Right,
                 color,
@@ -210,6 +263,26 @@ enum Font {
     Header,
     Label,
     Small,
+    Tiny,
+}
+
+fn style(font: Font, color: BinaryColor) -> U8g2TextStyle<BinaryColor> {
+    match font {
+        Font::Huge => U8g2TextStyle::new(fonts::u8g2_font_logisoso42_tf, color),
+        Font::Medium => U8g2TextStyle::new(fonts::u8g2_font_helvB14_tf, color),
+        Font::Header => U8g2TextStyle::new(fonts::u8g2_font_helvB12_tf, color),
+        Font::Label => U8g2TextStyle::new(fonts::u8g2_font_helvB10_tf, color),
+        Font::Small => U8g2TextStyle::new(fonts::u8g2_font_helvB08_tf, color),
+        Font::Tiny => U8g2TextStyle::new(fonts::u8g2_font_5x7_tf, color),
+    }
+}
+
+/// Width of `s` in pixels.
+fn width(s: &str, font: Font) -> i32 {
+    Text::new(s, Point::zero(), style(font, INK))
+        .bounding_box()
+        .size
+        .width as i32
 }
 
 /// Draws text and returns the x coordinate where it ends.
@@ -222,45 +295,7 @@ fn text(
     align: Alignment,
     color: BinaryColor,
 ) -> i32 {
-    let pos = Point::new(x, y);
-    let end = match font {
-        Font::Huge => draw(
-            b,
-            s,
-            pos,
-            U8g2TextStyle::new(fonts::u8g2_font_logisoso42_tf, color),
-            align,
-        ),
-        Font::Medium => draw(
-            b,
-            s,
-            pos,
-            U8g2TextStyle::new(fonts::u8g2_font_helvB14_tf, color),
-            align,
-        ),
-        Font::Header => draw(
-            b,
-            s,
-            pos,
-            U8g2TextStyle::new(fonts::u8g2_font_helvB12_tf, color),
-            align,
-        ),
-        Font::Label => draw(
-            b,
-            s,
-            pos,
-            U8g2TextStyle::new(fonts::u8g2_font_helvB10_tf, color),
-            align,
-        ),
-        Font::Small => draw(
-            b,
-            s,
-            pos,
-            U8g2TextStyle::new(fonts::u8g2_font_helvB08_tf, color),
-            align,
-        ),
-    };
-    end.x
+    draw(b, s, Point::new(x, y), style(font, color), align).x
 }
 
 fn draw<S>(b: &mut Bitmap, s: &str, pos: Point, style: S, align: Alignment) -> Point
@@ -336,24 +371,30 @@ pub fn demo_stats(today: NaiveDate) -> Stats {
     let pattern = [
         8.2, 0.0, 6.1, 0.0, 10.4, 5.3, 0.0, 7.8, 0.0, 6.5, 12.1, 0.0, 5.0, 8.2,
     ];
-    let my_daily_km: Vec<f64> = (0..today.day() as usize)
+    let mine: Vec<f64> = (0..today.day() as usize)
         .map(|i| pattern[i % pattern.len()])
         .collect();
-    let total: f64 = my_daily_km.iter().sum();
-    let runner = |name: &str, km: f64, goal_km: f64, pace| Runner {
+    // the dogs come along on some of my runs
+    let along = |every: usize| -> Vec<f64> {
+        mine.iter()
+            .enumerate()
+            .map(|(i, k)| if i % every != 0 { *k } else { 0.0 })
+            .collect()
+    };
+    let runner = |name: &str, daily_km: Vec<f64>, goal_km: f64, pace| Runner {
         name: name.into(),
-        km,
+        km: daily_km.iter().sum(),
         goal_km,
         pace_s_per_km: pace,
+        daily_km,
     };
     Stats {
         today,
-        me: runner("Soeren", total, 200.0, Some(342)),
+        me: runner("Soeren", mine.clone(), 200.0, Some(342)),
         dogs: vec![
-            runner("Nanuq", total * 0.67, 100.0, Some(338)),
-            runner("Anori", total * 0.45, 100.0, Some(345)),
+            runner("Nanuq", along(3), 100.0, Some(338)),
+            runner("Anori", along(2), 100.0, Some(345)),
         ],
-        my_daily_km,
     }
 }
 
@@ -378,6 +419,21 @@ mod tests {
         let d = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
         assert_eq!(month_progress(d(11, 15)), 0.5);
         assert_eq!(month_progress(d(11, 30)), 1.0);
+    }
+
+    #[test]
+    fn big_days_keep_clear_of_the_initials() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+        let mut stats = demo_stats(today);
+        for r in std::iter::once(&mut stats.me).chain(stats.dogs.iter_mut()) {
+            r.daily_km[24] = 108.5;
+        }
+        let img = render(&stats);
+        // day 25 (not today, so drawn black on white) is the Wednesday of the 5th week: cell x = 8 + 2 * 384 / 7
+        let x0 = 8 + (2.0 * 384.0 / 7.0) as u32;
+        let (y0, y1) = (160 + 4 * 23, 160 + 5 * 23 - 3);
+        // a white column must separate the initials (ending at x0 + 20) from the number
+        assert!((y0 + 1..y1).all(|y| !img.is_black(x0 + 21, y)));
     }
 
     #[test]
