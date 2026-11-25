@@ -219,22 +219,32 @@ fn calendar(b: &mut Bitmap, stats: &Stats) {
         let k = ran(&stats.me);
         if k > 0.0 {
             let tenths = (k * 10.0).round() as i64;
-            let right = x + w - 3;
-            let decimal = (tenths % 10).to_string();
+            let mut right = x + w - 3;
+            // 100 km and more: no decimal, or the integer runs into the initials
+            if tenths < 1000 {
+                let decimal = (tenths % 10).to_string();
+                text(
+                    b,
+                    &decimal,
+                    right,
+                    base - 4,
+                    Font::Small,
+                    Alignment::Right,
+                    color,
+                );
+                right -= width(&decimal, Font::Small) + 2;
+            }
+            // round when the decimal is dropped (108.5 -> 109)
+            let whole = if tenths < 1000 {
+                tenths / 10
+            } else {
+                (tenths + 5) / 10
+            }
+            .to_string();
             text(
                 b,
-                &decimal,
+                &whole,
                 right,
-                base - 4,
-                Font::Small,
-                Alignment::Right,
-                color,
-            );
-            let left = right - width(&decimal, Font::Small) - 2;
-            text(
-                b,
-                &(tenths / 10).to_string(),
-                left,
                 base,
                 Font::Header,
                 Alignment::Right,
@@ -409,6 +419,21 @@ mod tests {
         let d = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
         assert_eq!(month_progress(d(11, 15)), 0.5);
         assert_eq!(month_progress(d(11, 30)), 1.0);
+    }
+
+    #[test]
+    fn big_days_keep_clear_of_the_initials() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+        let mut stats = demo_stats(today);
+        for r in std::iter::once(&mut stats.me).chain(stats.dogs.iter_mut()) {
+            r.daily_km[24] = 108.5;
+        }
+        let img = render(&stats);
+        // day 25 (not today, so drawn black on white) is the Wednesday of the 5th week: cell x = 8 + 2 * 384 / 7
+        let x0 = 8 + (2.0 * 384.0 / 7.0) as u32;
+        let (y0, y1) = (160 + 4 * 23, 160 + 5 * 23 - 3);
+        // a white column must separate the initials (ending at x0 + 20) from the number
+        assert!((y0 + 1..y1).all(|y| !img.is_black(x0 + 21, y)));
     }
 
     #[test]
