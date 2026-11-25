@@ -162,7 +162,9 @@ async fn companions(
     match crate::companions::record(&state.db, &claim).await {
         Ok(_) => {
             api.trigger.notify_one();
-            reply(StatusCode::ACCEPTED, "received")
+            // echo the normalized dogs, so the Shortcut can show what was saved
+            let body = json!({ "status": "received", "dogs": claim.dogs });
+            (StatusCode::ACCEPTED, Json(body))
         }
         Err(err) => {
             tracing::warn!("storing claim failed: {err:#}");

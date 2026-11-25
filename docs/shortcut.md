@@ -22,7 +22,7 @@ Content-Type: application/json
 - `dogs`: any of `nanuq`, `anori`. An empty list means nobody came.
 - `started_at` / `ended_at`: start and end of the workout (ISO 8601). The server only matches the run whose start **and** end are within ±2 minutes. Send both or neither: only a start, or a start after the end, is rejected (`400`). Without times, the server uses the run that ended between 5 minutes before and 1 minute after the request.
 - At most one answer per minute (`429` otherwise). An answer that cannot be matched within 24 hours expires.
-- The answer is `202 {"status":"received"}`. The copies follow within seconds, at the latest on the next 5-minute sync.
+- The answer is `202 {"status":"received","dogs":["anori","nanuq"]}`: the dogs as saved (lower case, sorted, without duplicates), so the Shortcut can show them. The copies follow within seconds, at the latest on the next 5-minute sync.
 
 ## The Shortcut
 
@@ -31,7 +31,7 @@ Content-Type: application/json
    1. *Find Health Samples* (Gesundheitsproben suchen) or *Find Workouts* (depends on iOS version): latest workout, sorted by end date, limit 1. Take its **start date** and **end date**.
    2. *Choose from List* (Aus Liste auswählen), with *Select Multiple* on: `Nanuq`, `Anori`. The prompt shows the workout's date and time, e.g. „Lauf Di 01.12., 07:00 – wer war dabei?“, so you always see which run you answer for. Selecting nothing means nobody.
    3. *Get Contents of URL*: `POST` to the endpoint above, header `Authorization: Bearer <token>`, JSON body `dogs` (the selection, lower case), `started_at`, `ended_at` (dates formatted as ISO 8601).
-   4. *Show Notification*: „Gespeichert ✓“.
+   4. *Show Notification*: „Gespeichert ✓“ plus the response's `dogs` (*Get Dictionary Value* `dogs`), so you see what the server saved.
 
 If your iOS version can't read the workout's dates, leave `started_at`/`ended_at` out. The server then uses the time window described above (5 minutes before to 1 minute after the request). In this mode, **all corrections happen by hand in Endurain**: running the Shortcut again later would send a new time and could hit a different run.
 

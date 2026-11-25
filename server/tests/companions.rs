@@ -558,6 +558,11 @@ async fn endpoint_checks_token_dogs_and_rate() {
     let body = r#"{"dogs":["Nanuq"," anori","nanuq"],"started_at":"2026-12-01T07:00:00Z","ended_at":"2026-12-01T07:30:00Z"}"#;
     let r = app.clone().oneshot(post("s3cret", body)).await.unwrap();
     assert_eq!(r.status(), StatusCode::ACCEPTED);
+    let reply = axum::body::to_bytes(r.into_body(), 1024).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&reply).unwrap(),
+        json!({ "status": "received", "dogs": ["anori", "nanuq"] })
+    );
     // one claim per minute: 10 s later still refused, a minute later accepted
     let ago = |secs| Some(std::time::Instant::now() - std::time::Duration::from_secs(secs));
     *last.lock().unwrap() = ago(10);
