@@ -111,6 +111,9 @@ async fn webhook_notify(
     StatusCode::OK
 }
 
+/// At most one accepted claim per minute (plan §3.2).
+pub const CLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// The Shortcut's answer to "Who came along?" (needs `Authorization: Bearer <token>`).
 async fn companions(
     State(state): State<AppState>,
@@ -135,6 +138,14 @@ async fn companions(
             "expected {dogs, started_at, ended_at}",
         );
     };
+    // a workout is identified by start and end; only a claim with neither uses the fallback
+    match (claim.started_at, claim.ended_at) {
+        (Some(_), None) => return reply(StatusCode::BAD_REQUEST, "started_at needs ended_at"),
+        (Some(s), Some(e)) if s > e => {
+            return reply(StatusCode::BAD_REQUEST, "started_at is after ended_at");
+        }
+        _ => {}
+    }
     claim.dogs = claim.dogs.iter().map(|d| d.trim().to_lowercase()).collect();
     claim.dogs.sort();
     claim.dogs.dedup();
@@ -143,7 +154,7 @@ async fn companions(
     }
     {
         let mut last = api.last.lock().expect("claim lock");
-        if last.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10)) {
+        if last.is_some_and(|t| t.elapsed() < CLAIM_INTERVAL) {
             return reply(StatusCode::TOO_MANY_REQUESTS, "slow down");
         }
         *last = Some(std::time::Instant::now());

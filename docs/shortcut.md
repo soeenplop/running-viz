@@ -20,7 +20,8 @@ Content-Type: application/json
 ```
 
 - `dogs`: any of `nanuq`, `anori`. An empty list means nobody came.
-- `started_at` / `ended_at`: start and end of the workout (ISO 8601). The server only matches the run whose start **and** end are within ±2 minutes. Without them, it uses the run that ended within 5 minutes before the request.
+- `started_at` / `ended_at`: start and end of the workout (ISO 8601). The server only matches the run whose start **and** end are within ±2 minutes. Send both or neither: only a start, or a start after the end, is rejected (`400`). Without times, the server uses the run that ended between 5 minutes before and 1 minute after the request.
+- At most one answer per minute (`429` otherwise). An answer that cannot be matched within 24 hours expires.
 - The answer is `202 {"status":"received"}`. The copies follow within seconds, at the latest on the next 5-minute sync.
 
 ## The Shortcut
@@ -32,12 +33,12 @@ Content-Type: application/json
    3. *Get Contents of URL*: `POST` to the endpoint above, header `Authorization: Bearer <token>`, JSON body `dogs` (the selection, lower case), `started_at`, `ended_at` (dates formatted as ISO 8601).
    4. *Show Notification*: „Gespeichert ✓“.
 
-If your iOS version can't read the workout's dates, leave `started_at`/`ended_at` out. The server then uses the time window described above.
+If your iOS version can't read the workout's dates, leave `started_at`/`ended_at` out. The server then uses the time window described above (5 minutes before to 1 minute after the request). In this mode, **all corrections happen by hand in Endurain**: running the Shortcut again later would send a new time and could hit a different run.
 
 ## Corrections
 
-- **Latest run:** run the Shortcut again by hand. It sends the same workout times, and the newest answer wins: dogs that are no longer selected lose their copy, newly selected dogs get one.
-- **Older runs:** delete or keep the dog's copy directly in Endurain.
+- **Latest run** (only with workout times): run the Shortcut again by hand. It sends the same workout times, and the newest answer wins: dogs that are no longer selected lose their copy, newly selected dogs get one.
+- **Older runs:** delete or keep the dog's copy directly in Endurain. A copy you delete there stays deleted, unless you send a new answer for that run that includes the dog again.
 - If you delete one of **your** runs in Endurain, the server removes its dog copies within a day.
 
 Copies are only made for outdoor runs with GPS (`run`, `trail_run`, `track_run`). Treadmill runs never get copies.

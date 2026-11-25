@@ -487,7 +487,13 @@ async fn deleted_original_removes_copies() {
 
 // ---------- endpoint ----------
 
+type Last = std::sync::Arc<std::sync::Mutex<Option<std::time::Instant>>>;
+
 fn app(db: PgPool) -> axum::Router {
+    app_with(db, Default::default())
+}
+
+fn app_with(db: PgPool, last: Last) -> axum::Router {
     http::router(AppState {
         db,
         display: Display::new(&demo_stats(NaiveDate::from_ymd_opt(2026, 12, 1).unwrap())),
@@ -497,7 +503,7 @@ fn app(db: PgPool) -> axum::Router {
             token: "s3cret".into(),
             dogs: dogs(),
             trigger: Default::default(),
-            last: Default::default(),
+            last,
         }),
     })
 }
@@ -524,21 +530,178 @@ async fn endpoint_checks_token_dogs_and_rate() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     let big = format!(r#"{{"dogs":[],"x":"{}"}}"#, "a".repeat(5000));
-    let r = app(lazy).oneshot(post("s3cret", &big)).await.unwrap();
+    let r = app(lazy.clone()).oneshot(post("s3cret", &big)).await.unwrap();
     assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
+    // incomplete or inverted workout times are rejected before anything is stored
+    for bad in [
+        r#"{"dogs":[],"started_at":"2026-12-01T07:00:00Z"}"#,
+        r#"{"dogs":[],"started_at":"2026-12-01T08:00:00Z","ended_at":"2026-12-01T07:00:00Z"}"#,
+    ] {
+        let r = app(lazy.clone())
+            .oneshot(post("s3cret", bad))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{bad}");
+    }
+
     let Some(db) = fresh_db().await else { return };
-    let app = app(db.clone());
+    let last = Last::default();
+    let app = app_with(db.clone(), last.clone());
     let body = r#"{"dogs":["Nanuq"," anori","nanuq"],"started_at":"2026-12-01T07:00:00Z","ended_at":"2026-12-01T07:30:00Z"}"#;
     let r = app.clone().oneshot(post("s3cret", body)).await.unwrap();
     assert_eq!(r.status(), StatusCode::ACCEPTED);
-    let r = app.oneshot(post("s3cret", body)).await.unwrap();
+    // one claim per minute: 10 s later still refused, a minute later accepted
+    let ago = |secs| Some(std::time::Instant::now() - std::time::Duration::from_secs(secs));
+    *last.lock().unwrap() = ago(10);
+    let r = app.clone().oneshot(post("s3cret", body)).await.unwrap();
     assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
-    let stored: Vec<String> = sqlx::query_scalar("SELECT dogs FROM companion_claims")
-        .fetch_one(&db)
+    *last.lock().unwrap() = ago(61);
+    let r = app.oneshot(post("s3cret", body)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::ACCEPTED);
+    let stored: Vec<Vec<String>> = sqlx::query_scalar("SELECT dogs FROM companion_claims")
+        .fetch_all(&db)
         .await
         .unwrap();
-    assert_eq!(stored, vec!["anori", "nanuq"]);
+    assert_eq!(
+        stored,
+        vec![vec!["anori", "nanuq"]; 2],
+        "rejected payloads stored nothing"
+    );
+}
+
+/// A claim that waited more than 24 h expires instead of undoing later manual fixes.
+#[tokio::test]
+async fn stale_claim_expires_before_matching() {
+    let Some(db) = fresh_db().await else { return };
+    let r = run(&db, "2026-12-11T07:00:00Z", 30).await;
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-11T07:00:00Z"),
+        Some("2026-12-11T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-11T08:00:00Z").await;
+    set_copies_done(&db, r).await;
+    // an empty claim that arrived but could not be processed for 25 h
+    let stale = claim(
+        &db,
+        &[],
+        Some("2026-12-11T07:00:00Z"),
+        Some("2026-12-11T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-12T08:31:00Z").await;
+    assert_eq!(claim_state(&db, stale).await.0, "expired");
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "done".into(), 0)]
+    );
+}
+
+/// A copy removed by hand in Endurain before it was renamed stays removed,
+/// until a newer claim asks for it again.
+#[tokio::test]
+async fn copy_removed_by_hand_is_respected() {
+    let Some(db) = fresh_db().await else { return };
+    let dog = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/activities/copy-1"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&dog)
+        .await;
+    let me = me_server().await;
+    let me_acc = Account::new(reqwest::Client::new(), &me.uri(), "me");
+    let accounts = HashMap::from([(
+        "nanuq".to_string(),
+        Account::new(reqwest::Client::new(), &dog.uri(), "dog"),
+    )]);
+    let r = run(&db, "2026-12-12T07:00:00Z", 30).await;
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-12T07:00:00Z"),
+        Some("2026-12-12T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-12T08:00:00Z").await;
+    sqlx::query("UPDATE uploads SET status = 'uploaded', job_id = 'j', endurain_activity_id = 'copy-1' WHERE run_id = $1")
+        .bind(r)
+        .execute(&db)
+        .await
+        .unwrap();
+    for _ in 0..3 {
+        companions::process_copies(&db, &me_acc, &accounts)
+            .await
+            .unwrap();
+        plan(&db, "2026-12-12T09:00:00Z").await;
+    }
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "deleted".into(), 0)]
+    );
+
+    // asking again with a newer claim brings it back as a new generation
+    let again = claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-12T07:00:00Z"),
+        Some("2026-12-12T07:30:00Z"),
+    )
+    .await;
+    sqlx::query("UPDATE companion_claims SET received_at = '2026-12-12T10:00:00Z' WHERE id = $1")
+        .bind(again)
+        .execute(&db)
+        .await
+        .unwrap();
+    plan(&db, "2026-12-12T10:01:00Z").await;
+    assert_eq!(
+        copies(&db, r).await,
+        vec![
+            ("nanuq".into(), "deleted".into(), 0),
+            ("nanuq".into(), "pending".into(), 1)
+        ]
+    );
+}
+
+/// A failing daily reconcile must not block matching and planning.
+#[tokio::test]
+async fn reconcile_failure_does_not_block_the_pass() {
+    let Some(db) = fresh_db().await else { return };
+    let me = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&me)
+        .await;
+    let me_acc = Account::new(reqwest::Client::new(), &me.uri(), "me");
+    // a copy in this month makes reconcile call Endurain (and fail)
+    let old = run(&db, &chrono::Utc::now().to_rfc3339(), 30).await;
+    claim(&db, &["anori"], None, None).await;
+    sqlx::query("INSERT INTO uploads (id, kind, fit_file_id, run_id, dog, idempotency_key, status, job_id, endurain_activity_id)
+                 SELECT gen_random_uuid(), 'copy', fit_file_id, id, 'anori', 'k-old', 'done', 'j', 'c' FROM runs WHERE id = $1")
+        .bind(old)
+        .execute(&db)
+        .await
+        .unwrap();
+    let r = run(&db, "2026-12-13T07:00:00Z", 30).await;
+    let c = claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-13T07:00:00Z"),
+        Some("2026-12-13T07:30:00Z"),
+    )
+    .await;
+    let mut last_reconcile = None;
+    companions::pass(&db, &me_acc, &dogs(), &HashMap::new(), &mut last_reconcile)
+        .await
+        .unwrap();
+    assert_eq!(last_reconcile, None, "reconcile is retried next pass");
+    assert_eq!(claim_state(&db, c).await, ("matched".into(), Some(r)));
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "pending".into(), 0)]
+    );
 }
 
 /// Stuck-copy cases: a stale ETag (412) is retried, a deleted original still lets the

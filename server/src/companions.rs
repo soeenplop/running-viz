@@ -50,6 +50,14 @@ pub async fn record(db: &PgPool, claim: &Claim) -> Result<Uuid> {
 /// Binds pending claims to runs; never guesses between several candidates.
 pub async fn match_claims(db: &PgPool, now: DateTime<Utc>) -> Result<()> {
     let tol = Duration::minutes(TOLERANCE_MIN);
+    // claims older than 24 h expire before any matching: a late match could undo
+    // corrections the owner has made by hand in the meantime
+    sqlx::query(
+        "UPDATE companion_claims SET status = 'expired' WHERE status = 'pending' AND received_at < $1",
+    )
+    .bind(now - Duration::hours(24))
+    .execute(db)
+    .await?;
     let claims = sqlx::query(
         "SELECT id, received_at, started_at, ended_at FROM companion_claims WHERE status = 'pending'",
     )
@@ -90,16 +98,9 @@ pub async fn match_claims(db: &PgPool, now: DateTime<Utc>) -> Result<()> {
                 .execute(db)
                 .await?;
             }
+            [] => {}
             many => {
-                if many.len() > 1 {
-                    tracing::warn!(%id, candidates = many.len(), "claim matches several runs, not guessing");
-                }
-                if received < now - Duration::hours(24) {
-                    sqlx::query("UPDATE companion_claims SET status = 'expired' WHERE id = $1")
-                        .bind(id)
-                        .execute(db)
-                        .await?;
-                }
+                tracing::warn!(%id, candidates = many.len(), "claim matches several runs, not guessing");
             }
         }
     }
@@ -109,7 +110,7 @@ pub async fn match_claims(db: &PgPool, now: DateTime<Utc>) -> Result<()> {
 /// Brings the queued copies in line with the newest claim per run.
 pub async fn plan_copies(db: &PgPool, dogs: &[String]) -> Result<()> {
     let runs = sqlx::query(
-        "SELECT DISTINCT ON (c.run_id) c.run_id, c.dogs, r.sport, r.has_gps, r.gone, r.fit_file_id
+        "SELECT DISTINCT ON (c.run_id) c.run_id, c.dogs, c.received_at, r.sport, r.has_gps, r.gone, r.fit_file_id
          FROM companion_claims c JOIN runs r ON r.id = c.run_id
          WHERE c.status = 'matched'
          ORDER BY c.run_id, c.received_at DESC",
@@ -119,27 +120,32 @@ pub async fn plan_copies(db: &PgPool, dogs: &[String]) -> Result<()> {
     for r in runs {
         let run: Uuid = r.get("run_id");
         let wanted_dogs: Vec<String> = r.get("dogs");
+        let claimed_at: DateTime<Utc> = r.get("received_at");
         let sport: String = r.get("sport");
         let eligible = DOG_RUN_TYPES.contains(&sport.as_str())
             && r.get::<bool, _>("has_gps")
             && !r.get::<bool, _>("gone");
         for dog in dogs {
             let want = eligible && wanted_dogs.contains(dog);
-            let latest: Option<(Uuid, String, i32)> = sqlx::query_as(
-                "SELECT id, status, generation FROM uploads WHERE kind = 'copy' AND run_id = $1 AND dog = $2
+            let latest: Option<(Uuid, String, i32, Option<DateTime<Utc>>)> = sqlx::query_as(
+                "SELECT id, status, generation, requested_at FROM uploads WHERE kind = 'copy' AND run_id = $1 AND dog = $2
                  ORDER BY generation DESC LIMIT 1",
             )
             .bind(run)
             .bind(dog)
             .fetch_optional(db)
             .await?;
-            let active = latest.as_ref().filter(|(_, s, _)| s != "deleted");
+            let active = latest.as_ref().filter(|(_, s, _, _)| s != "deleted");
+            // a deleted copy (by us or by hand in Endurain) comes back only for a newer claim
+            let fresh_claim = latest
+                .as_ref()
+                .is_none_or(|(_, _, _, requested)| requested.is_none_or(|r| claimed_at > r));
             match (want, active) {
-                (true, None) => {
-                    let generation = latest.map_or(0, |(_, _, g)| g + 1);
+                (true, None) if fresh_claim => {
+                    let generation = latest.map_or(0, |(_, _, g, _)| g + 1);
                     sqlx::query(
-                        "INSERT INTO uploads (id, kind, fit_file_id, run_id, dog, generation, idempotency_key)
-                         VALUES ($1, 'copy', $2, $3, $4, $5, $6)",
+                        "INSERT INTO uploads (id, kind, fit_file_id, run_id, dog, generation, idempotency_key, requested_at)
+                         VALUES ($1, 'copy', $2, $3, $4, $5, $6, $7)",
                     )
                     .bind(Uuid::new_v4())
                     .bind(r.get::<Uuid, _>("fit_file_id"))
@@ -147,6 +153,7 @@ pub async fn plan_copies(db: &PgPool, dogs: &[String]) -> Result<()> {
                     .bind(dog)
                     .bind(generation)
                     .bind(format!("run:{run}:{dog}:{generation}"))
+                    .bind(claimed_at)
                     .execute(db)
                     .await?;
                     tracing::info!(%run, dog, "queued dog copy");
@@ -154,7 +161,7 @@ pub async fn plan_copies(db: &PgPool, dogs: &[String]) -> Result<()> {
                 // only finished copies are deleted; unfinished ones finish first (a crashed
                 // upload may already exist in Endurain), then the next pass removes them
                 // also copies stuck in needs_attention that exist in Endurain
-                (false, Some((id, status, _)))
+                (false, Some((id, status, _, _)))
                     if status == "done"
                         || (status == "needs_attention" && has_activity(db, *id).await?) =>
                 {
@@ -310,6 +317,15 @@ async fn rename(
     copy: &str,
     row: &sqlx::postgres::PgRow,
 ) -> Result<()> {
+    if dog.activity_etag(copy).await?.is_none() {
+        // the copy was removed by hand in Endurain: respect that
+        sqlx::query("UPDATE uploads SET status = 'deleted', updated_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(db)
+            .await?;
+        tracing::info!(%id, "dog copy was removed in Endurain");
+        return Ok(());
+    }
     let original: String = row.get("original_id");
     // the original may be gone (deleted in Endurain): the copy still gets a name,
     // and reconcile removes it later
@@ -389,6 +405,40 @@ pub async fn reconcile(db: &PgPool, me: &Account, now: DateTime<Utc>) -> Result<
                 .await?;
             tracing::info!(%run, "original deleted in Endurain: removing dog copies");
         }
+    }
+    Ok(())
+}
+
+/// Claims → runs → copies; deleted originals are checked once a day.
+pub async fn pass(
+    db: &PgPool,
+    me: &Account,
+    dogs: &[String],
+    dog_accounts: &std::collections::HashMap<String, Account>,
+    last_reconcile: &mut Option<chrono::NaiveDate>,
+) -> Result<()> {
+    let now = chrono::Utc::now();
+    if *last_reconcile != Some(now.date_naive()) {
+        // independent of the rest: a failure is logged and retried on the next pass
+        match reconcile(db, me, now).await {
+            Ok(()) => *last_reconcile = Some(now.date_naive()),
+            Err(err) => tracing::warn!("reconcile failed: {err:#}"),
+        }
+    }
+    match_claims(db, now).await?;
+    plan_copies(db, dogs).await?;
+    for _ in 0..10 {
+        process_copies(db, me, dog_accounts).await?;
+        let open: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM uploads WHERE kind = 'copy'
+             AND status IN ('pending', 'job_started', 'uploaded', 'delete_pending')",
+        )
+        .fetch_one(db)
+        .await?;
+        if open == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
     Ok(())
 }
