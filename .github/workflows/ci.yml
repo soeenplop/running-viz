@@ -37,3 +37,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f server/Dockerfile .
+
+  firmware:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('firmware/platformio.ini') }}
+      - run: pip install platformio
+      - run: cp include/secrets.example.h include/secrets.h
+      - run: pio run
+      - run: PLATFORMIO_BUILD_FLAGS="-D PANEL_420_V2" pio run
+      - run: PLATFORMIO_BUILD_FLAGS="-D BOARD_REV_OLD" pio run

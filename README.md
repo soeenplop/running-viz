@@ -34,7 +34,7 @@ The display only shows a finished image: all logic and rendering happens on the 
 |---|---|---|
 | `server/` | Import, dog copies, rendering, API | Rust, Postgres |
 | `web/` | Fullscreen view of the rendered image | static web |
-| `firmware/` | Fetches the image and draws it on the panel | C++ / Arduino (ESP8266) |
+| `firmware/` | Fetches the image and draws it on the panel ([details](firmware/README.md)) | C++ / Arduino (ESP8266), PlatformIO |
 | `deploy/` | Endurain + server + web | Docker Compose, Dokploy |
 
 ## Domains
