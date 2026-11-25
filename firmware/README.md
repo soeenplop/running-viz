@@ -6,7 +6,9 @@ Every 30 minutes the board:
 1. wakes from deep sleep and connects to WiFi (15 s limit);
 2. fetches `/display.bin` over HTTPS with the last `ETag` (`If-None-Match`);
 3. on `304` does nothing; on `200` streams the 15 000 bytes straight into the panel's RAM and refreshes **only if the frame arrived completely**, then remembers the new ETag (RTC memory);
-4. puts the panel into hibernation and goes back to deep sleep for 30 minutes, also after any error (whole wake ≤ 45 s).
+4. puts the panel into hibernation and goes back to deep sleep for 30 minutes, also after any error. The download has 15 s in total, the whole wake 45 s, and a last-resort timer ends any wake after 60 s. A refresh that times out is not remembered, so the next wake tries again.
+
+An interrupted download never changes the picture: the first bytes don't clear the panel, and the refresh only starts after all 15 000 bytes.
 
 TLS runs without certificate check: the image is public and a man-in-the-middle could only show a wrong picture (see `docs/PLAN.md`).
 
@@ -21,7 +23,10 @@ pio device monitor                               # logs (115200 baud)
 
 ## Hardware notes (to verify on the board)
 
-- **Pins** (Waveshare driver board): CS 15, DC 4, RST 2, BUSY 5, SPI CLK 14, DIN 13.
+- **Board revision:** there are two revisions of the Waveshare e-Paper ESP8266 Driver Board.
+  - **New** (default): CS 15, DC 4, **RST 2, BUSY 5**, SPI CLK 14, DIN 13. GPIO16 is free.
+  - **Old**: **BUSY 16, RST 5**. Build with `-D BOARD_REV_OLD`. GPIO16 is taken by BUSY, so the board can't wake from deep sleep: the firmware then waits 30 minutes with WiFi off and restarts. That needs USB power.
+  - Check which pin BUSY is wired to before adding any wire.
 - **Panel version:** V1 panels use `GxEPD2_420`. If the panel says **V2** (SSD1683), enable `-D PANEL_420_V2` in `platformio.ini`.
-- **Deep sleep:** waking up needs **GPIO16 connected to RST**. If the board doesn't wake up after 30 minutes, add that wire (or run on USB power).
+- **Deep sleep (new revision only):** waking up needs **GPIO16 connected to RST**. **Never** add this wire on the old revision (it would connect panel BUSY to reset).
 - **Colours:** if the image appears inverted, the panel expects the opposite bit polarity; tell me and I'll flip it in the firmware.

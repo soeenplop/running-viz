@@ -55,3 +55,5 @@ jobs:
       - run: pip install platformio
       - run: cp include/secrets.example.h include/secrets.h
       - run: pio run
+      - run: PLATFORMIO_BUILD_FLAGS="-D PANEL_420_V2" pio run
+      - run: PLATFORMIO_BUILD_FLAGS="-D BOARD_REV_OLD" pio run
