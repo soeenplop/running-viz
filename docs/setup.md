@@ -61,7 +61,16 @@ HealthFit exports every workout as a FIT file to Dropbox (`/Apps/HealthFitExport
 
 What the import does: every new FIT file is uploaded to my Endurain account. Files from before `DROPBOX_IMPORT_SINCE`, unreadable files, and second exports of the same workout (same start ±60 s) are skipped and remembered, so they are not checked again. Uploads that Endurain answers ambiguously are marked `needs_attention` in the `uploads` table and left alone.
 
-## 4. API key renewal
+## 4. Optional: SparkyFitness mirror
+
+To compare [SparkyFitness](https://github.com/CodeWithCJ/SparkyFitness) with Endurain, the server can mirror the runs into it as well (Endurain stays the source for the display).
+
+- One SparkyFitness account each for me, Nanuq and Anori; one API key per account (Settings → API keys, or `POST /api/auth/api-key/create` while signed in).
+- Set `SPARKY_URL` and `SPARKY_KEY_SOEREN`, `SPARKY_KEY_NANUQ`, `SPARKY_KEY_ANORI` (an account without key is skipped).
+- What is sent: per account and day, all runs of that day at once (SparkyFitness replaces a day's entries of one source on every import), with start, duration, distance and the GPS track. No heart rate or other body data. Dogs get the runs they have a finished Endurain copy of.
+- Only the current and the previous month are mirrored; a day is only sent again when it changed. If a day loses all its runs (e.g. a run was deleted in Endurain), only entries that SparkyFitness stored with source `running-viz` are deleted there; manual entries are never touched. The mirror runs in its own task, so SparkyFitness being slow or down never delays the display.
+
+## 5. API key renewal
 
 Keys are valid for up to 10 years (the script raises the server limit). To rotate a key:
 1. Create a new key in Endurain (Settings → Security → API keys).

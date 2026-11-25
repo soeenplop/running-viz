@@ -32,7 +32,7 @@ The display only shows a finished image: all logic and rendering happens on the 
 
 | Path | What | Tech |
 |---|---|---|
-| `server/` | Import, dog copies, rendering, API | Rust, Postgres |
+| `server/` | Import, dog copies, rendering, API, optional SparkyFitness mirror | Rust, Postgres |
 | `web/` | Fullscreen view of the rendered image | static web |
 | `firmware/` | Fetches the image and draws it on the panel ([details](firmware/README.md)) | C++ / Arduino (ESP8266), PlatformIO |
 | `deploy/` | Endurain + server + web | Docker Compose, Dokploy |
@@ -44,6 +44,7 @@ The display only shows a finished image: all logic and rendering happens on the 
 | API | `running-viz-api.soeenplop.dev` |
 | Frontend | `running-viz.soeenplop.dev` |
 | Endurain | `endurain.soeenplop.dev` |
+| SparkyFitness (trial) | `sparky.soeenplop.dev` |
 
 ## Getting started
 

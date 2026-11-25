@@ -15,6 +15,8 @@ pub struct Workout {
     pub sport: u8,
     /// one GPS point (degrees) per record, or no GPS
     pub gps: Option<(f64, f64)>,
+    /// moving time if it differs from the elapsed `seconds` (a paused workout)
+    pub timer_s: Option<u32>,
 }
 
 impl Workout {
@@ -25,6 +27,7 @@ impl Workout {
             distance_m,
             sport: 1,
             gps: Some((52.5, 13.4)),
+            timer_s: None,
         }
     }
 }
@@ -83,7 +86,7 @@ pub fn fit_file(w: &Workout) -> Vec<u8> {
     data.extend(fit_time(end).to_le_bytes());
     data.extend(fit_time(w.start).to_le_bytes());
     data.extend((w.seconds * 1000).to_le_bytes());
-    data.extend((w.seconds * 1000).to_le_bytes());
+    data.extend((w.timer_s.unwrap_or(w.seconds) * 1000).to_le_bytes());
     data.extend((w.distance_m * 100).to_le_bytes());
     data.push(w.sport);
     data.push(0);

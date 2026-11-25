@@ -117,6 +117,23 @@ pub fn empty(names: &[String], today: NaiveDate) -> Stats {
     }
 }
 
+/// Start of the sync window: the first day of the previous month in Europe/Berlin, as a
+/// date and as the exact UTC instant of its local midnight.
+pub fn window_start(
+    now: chrono::DateTime<chrono::Utc>,
+) -> (NaiveDate, chrono::DateTime<chrono::Utc>) {
+    use chrono::TimeZone;
+    let today = now.with_timezone(&Berlin).date_naive();
+    let first = today.with_day(1).expect("day 1");
+    let day = (first - Duration::days(1)).with_day(1).expect("day 1");
+    let midnight = Berlin
+        .from_local_datetime(&day.and_hms_opt(0, 0, 0).expect("midnight"))
+        .earliest()
+        .expect("midnight exists in Europe/Berlin")
+        .with_timezone(&chrono::Utc);
+    (day, midnight)
+}
+
 fn days_in_month(d: NaiveDate) -> u32 {
     let first_next = if d.month() == 12 {
         NaiveDate::from_ymd_opt(d.year() + 1, 1, 1)
@@ -180,6 +197,19 @@ mod tests {
         assert_eq!((m.km, m.pace_s_per_km), (10.0, Some(300)));
         let m = month(&[untimed], MY_RUN_TYPES, dec(14));
         assert_eq!((m.km, m.pace_s_per_km), (5.0, None));
+    }
+
+    #[test]
+    fn window_starts_at_berlin_midnight_of_last_month() {
+        let (day, at) = window_start("2027-02-15T12:00:00Z".parse().unwrap());
+        assert_eq!(day, NaiveDate::from_ymd_opt(2027, 1, 1).unwrap());
+        // 1 Jan 00:00 Berlin (CET) = 31 Dec 23:00 UTC
+        assert_eq!(
+            at,
+            "2026-12-31T23:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
     }
 
     #[test]
