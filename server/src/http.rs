@@ -19,6 +19,10 @@ pub fn router(state: AppState) -> Router {
             "/dropbox/webhook",
             get(webhook_challenge).post(webhook_notify),
         )
+        .route(
+            "/api/companions",
+            axum::routing::post(companions).layer(axum::extract::DefaultBodyLimit::max(4096)),
+        )
         .with_state(state)
 }
 
@@ -105,6 +109,79 @@ async fn webhook_notify(
     }
     webhook.trigger.notify_one();
     StatusCode::OK
+}
+
+/// At most one accepted claim per minute (plan §3.2).
+pub const CLAIM_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The Shortcut's answer to "Who came along?" (needs `Authorization: Bearer <token>`).
+async fn companions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> (StatusCode, Json<Value>) {
+    let reply = |code, msg: &str| (code, Json(json!({ "status": msg })));
+    let Some(api) = &state.companions else {
+        return reply(StatusCode::NOT_FOUND, "disabled");
+    };
+    let given = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    if !same_secret(given, &api.token) {
+        return reply(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let Ok(mut claim) = serde_json::from_slice::<crate::companions::Claim>(&body) else {
+        return reply(
+            StatusCode::BAD_REQUEST,
+            "expected {dogs, started_at, ended_at}",
+        );
+    };
+    // a workout is identified by start and end; only a claim with neither uses the fallback
+    match (claim.started_at, claim.ended_at) {
+        (Some(_), None) => return reply(StatusCode::BAD_REQUEST, "started_at needs ended_at"),
+        (Some(s), Some(e)) if s > e => {
+            return reply(StatusCode::BAD_REQUEST, "started_at is after ended_at");
+        }
+        _ => {}
+    }
+    claim.dogs = claim.dogs.iter().map(|d| d.trim().to_lowercase()).collect();
+    claim.dogs.sort();
+    claim.dogs.dedup();
+    if let Some(unknown) = claim.dogs.iter().find(|d| !api.dogs.contains(d)) {
+        return reply(StatusCode::BAD_REQUEST, &format!("unknown dog {unknown}"));
+    }
+    {
+        let mut last = api.last.lock().expect("claim lock");
+        if last.is_some_and(|t| t.elapsed() < CLAIM_INTERVAL) {
+            return reply(StatusCode::TOO_MANY_REQUESTS, "slow down");
+        }
+        *last = Some(std::time::Instant::now());
+    }
+    match crate::companions::record(&state.db, &claim).await {
+        Ok(_) => {
+            api.trigger.notify_one();
+            reply(StatusCode::ACCEPTED, "received")
+        }
+        Err(err) => {
+            tracing::warn!("storing claim failed: {err:#}");
+            reply(StatusCode::SERVICE_UNAVAILABLE, "try again")
+        }
+    }
+}
+
+/// Compares secrets without leaking their length or content through timing.
+fn same_secret(given: &str, expected: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    let (a, b) = (
+        Sha256::digest(given.as_bytes()),
+        Sha256::digest(expected.as_bytes()),
+    );
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 /// Raw 1-bit framebuffer for the e-paper display.

@@ -83,7 +83,7 @@ The public routes are an explicit owner decision: the image (incl. km per day) m
 ### 3.3 Matching companions to runs
 
 The Shortcut is triggered by the Apple Watch automation **when the workout ends**. The FIT file arrives minutes later.
-- The Shortcut sends `ended_at` = end date of the most recent workout from Health. A claim matches only a run with **`|end_time − ended_at| ≤ 2 min`**. No match yet → stays `pending`, retried every loop, `expired` after 24 h. More than one candidate → stays pending and is logged (no guessing).
+- The Shortcut sends `started_at` and `ended_at` of the most recent workout from Health (owner decision: both). A claim matches only a run whose start **and** end are within **±2 min**. No match yet → stays `pending`, retried every loop, `expired` after 24 h. More than one candidate → stays pending and is logged (no guessing).
 - The Shortcut's question shows the workout's date and time („Lauf Di 24.11., 08:10 – wer war dabei?“), so the owner always sees which run the answer applies to.
 - **Correction** (most recent run only) = run the same Shortcut again: same `ended_at` → same run. The newest claim per run wins: missing dogs get their copy deleted, new dogs get one. **Older runs are corrected by hand in Endurain.**
 - **Fallback** if the Shortcut cannot read the workout end date (verified first in PR 8): `t = received_at`, window `[t − 5 min, t + 1 min]`. Accepted residual risk: two runs ending within 5 min of each other. Corrections then happen by hand in Endurain.

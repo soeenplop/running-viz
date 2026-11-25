@@ -25,6 +25,7 @@ fn app() -> axum::Router {
         display: Display::new(&demo_stats(day())),
         sync: Default::default(),
         webhook: None,
+        companions: None,
     })
 }
 
