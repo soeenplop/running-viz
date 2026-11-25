@@ -413,14 +413,14 @@ async fn touch(db: &PgPool, id: Uuid) -> Result<()> {
     Ok(())
 }
 
-/// Once a day: originals of the current and previous month that were deleted in Endurain
-/// are marked `gone`, so their dog copies and SparkyFitness mirror entries are removed.
-/// Only a 404 counts.
+/// Once a day: originals with dog copies (current and previous month) that were deleted
+/// in Endurain are marked `gone`, so `plan_copies` removes their copies. Only a 404 counts.
 pub async fn reconcile(db: &PgPool, me: &Account, now: DateTime<Utc>) -> Result<()> {
-    // same window as the SparkyFitness mirror: from Berlin midnight of last month's 1st
+    // from Berlin midnight of last month's 1st
     let (_, since) = crate::stats::window_start(now);
     let runs: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT r.id, r.endurain_activity_id FROM runs r WHERE NOT r.gone AND r.start_time >= $1",
+        "SELECT DISTINCT r.id, r.endurain_activity_id FROM runs r JOIN uploads u ON u.run_id = r.id
+         WHERE u.kind = 'copy' AND u.status <> 'deleted' AND NOT r.gone AND r.start_time >= $1",
     )
     .bind(since)
     .fetch_all(db)
