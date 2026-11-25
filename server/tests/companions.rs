@@ -72,7 +72,8 @@ async fn run(db: &PgPool, start: &str, minutes: i64) -> Uuid {
     run
 }
 
-/// Records a claim as if it arrived right when the workout ended.
+/// Records a claim as if it arrived right after the workout ended; each further claim
+/// arrives one second later than the previous one (a simulated, monotonic clock).
 async fn claim(db: &PgPool, dogs: &[&str], start: Option<&str>, end: Option<&str>) -> Uuid {
     let id = companions::record(
         db,
@@ -85,7 +86,9 @@ async fn claim(db: &PgPool, dogs: &[&str], start: Option<&str>, end: Option<&str
     .await
     .unwrap();
     sqlx::query(
-        "UPDATE companion_claims SET received_at = COALESCE(ended_at, received_at) WHERE id = $1",
+        "UPDATE companion_claims SET received_at = COALESCE(ended_at, received_at)
+             + make_interval(secs => (SELECT count(*) FROM companion_claims))
+         WHERE id = $1",
     )
     .bind(id)
     .execute(db)
@@ -178,6 +181,7 @@ async fn correction_affects_only_its_run_and_regenerates() {
         Some("2026-11-30T07:30:00Z"),
     )
     .await;
+    plan(&db, "2026-11-30T08:00:00Z").await;
     claim(
         &db,
         &["anori"],
@@ -530,7 +534,10 @@ async fn endpoint_checks_token_dogs_and_rate() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     let big = format!(r#"{{"dogs":[],"x":"{}"}}"#, "a".repeat(5000));
-    let r = app(lazy.clone()).oneshot(post("s3cret", &big)).await.unwrap();
+    let r = app(lazy.clone())
+        .oneshot(post("s3cret", &big))
+        .await
+        .unwrap();
     assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     // incomplete or inverted workout times are rejected before anything is stored
@@ -684,14 +691,15 @@ async fn reconcile_failure_does_not_block_the_pass() {
         .execute(&db)
         .await
         .unwrap();
-    let r = run(&db, "2026-12-13T07:00:00Z", 30).await;
-    let c = claim(
-        &db,
-        &["nanuq"],
-        Some("2026-12-13T07:00:00Z"),
-        Some("2026-12-13T07:30:00Z"),
-    )
-    .await;
+    // a workout relative to the pass clock (the pass uses the real time)
+    let start = (chrono::Utc::now() - Duration::hours(2))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let end = (chrono::Utc::now() - Duration::minutes(90))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    let r = run(&db, &start, 30).await;
+    let c = claim(&db, &["nanuq"], Some(&start), Some(&end)).await;
     let mut last_reconcile = None;
     companions::pass(&db, &me_acc, &dogs(), &HashMap::new(), &mut last_reconcile)
         .await
@@ -775,5 +783,105 @@ async fn copies_do_not_get_stuck_after_upload() {
     assert_eq!(
         copies(&db, r).await,
         vec![("nanuq".into(), "delete_pending".into(), 0)]
+    );
+}
+
+/// A repeated claim that was already handled by an active copy must not bring the copy
+/// back after it was removed by hand; a claim received after the removal can.
+#[tokio::test]
+async fn repeated_claim_does_not_undo_manual_removal() {
+    let Some(db) = fresh_db().await else { return };
+    let r = run(&db, "2026-12-14T07:00:00Z", 30).await;
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-14T07:00:00Z"),
+        Some("2026-12-14T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-14T08:00:00Z").await;
+    // second claim still wants Nanuq while the copy is in flight
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-14T07:00:00Z"),
+        Some("2026-12-14T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-14T08:01:00Z").await;
+    // the owner removes the copy by hand; the worker notices (404) and marks it deleted
+    sqlx::query("UPDATE uploads SET status = 'deleted' WHERE run_id = $1")
+        .bind(r)
+        .execute(&db)
+        .await
+        .unwrap();
+    plan(&db, "2026-12-14T09:00:00Z").await;
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "deleted".into(), 0)]
+    );
+    // a new claim received after the removal asks again
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-14T07:00:00Z"),
+        Some("2026-12-14T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-14T09:30:00Z").await;
+    assert_eq!(
+        copies(&db, r).await,
+        vec![
+            ("nanuq".into(), "deleted".into(), 0),
+            ("nanuq".into(), "pending".into(), 1)
+        ]
+    );
+}
+
+/// A copy removed between the ETag read and the PATCH (404 on PATCH) counts as removed.
+#[tokio::test]
+async fn rename_404_counts_as_removed() {
+    let Some(db) = fresh_db().await else { return };
+    let dog = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/activities/copy-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("ETag", "\"3\"")
+                .set_body_json(json!({ "id": "copy-1", "activity_type": "run", "distance": 5000 })),
+        )
+        .mount(&dog)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/v1/activities/copy-1"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({ "title": "Not Found" })))
+        .mount(&dog)
+        .await;
+    let me = me_server().await;
+    let me_acc = Account::new(reqwest::Client::new(), &me.uri(), "me");
+    let accounts = HashMap::from([(
+        "nanuq".to_string(),
+        Account::new(reqwest::Client::new(), &dog.uri(), "dog"),
+    )]);
+    let r = run(&db, "2026-12-15T07:00:00Z", 30).await;
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-15T07:00:00Z"),
+        Some("2026-12-15T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-15T08:00:00Z").await;
+    sqlx::query("UPDATE uploads SET status = 'uploaded', job_id = 'j', endurain_activity_id = 'copy-1' WHERE run_id = $1")
+        .bind(r)
+        .execute(&db)
+        .await
+        .unwrap();
+    companions::process_copies(&db, &me_acc, &accounts)
+        .await
+        .unwrap();
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "deleted".into(), 0)]
     );
 }

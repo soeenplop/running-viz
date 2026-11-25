@@ -141,6 +141,17 @@ pub async fn plan_copies(db: &PgPool, dogs: &[String]) -> Result<()> {
                 .as_ref()
                 .is_none_or(|(_, _, _, requested)| requested.is_none_or(|r| claimed_at > r));
             match (want, active) {
+                // an active copy has handled this claim: remember it, so a later manual
+                // removal is not undone by the same (already handled) claim
+                (true, Some((id, _, _, _))) => {
+                    sqlx::query(
+                        "UPDATE uploads SET requested_at = GREATEST(requested_at, $2) WHERE id = $1",
+                    )
+                    .bind(id)
+                    .bind(claimed_at)
+                    .execute(db)
+                    .await?;
+                }
                 (true, None) if fresh_claim => {
                     let generation = latest.map_or(0, |(_, _, g, _)| g + 1);
                     sqlx::query(
@@ -318,13 +329,7 @@ async fn rename(
     row: &sqlx::postgres::PgRow,
 ) -> Result<()> {
     if dog.activity_etag(copy).await?.is_none() {
-        // the copy was removed by hand in Endurain: respect that
-        sqlx::query("UPDATE uploads SET status = 'deleted', updated_at = now() WHERE id = $1")
-            .bind(id)
-            .execute(db)
-            .await?;
-        tracing::info!(%id, "dog copy was removed in Endurain");
-        return Ok(());
+        return mark_removed(db, id).await;
     }
     let original: String = row.get("original_id");
     // the original may be gone (deleted in Endurain): the copy still gets a name,
@@ -340,12 +345,35 @@ async fn rename(
         }
         Err(err) => return Err(err),
     };
-    dog.rename(copy, &name, &row.get::<String, _>("sport"))
-        .await?;
+    match dog
+        .rename(copy, &name, &row.get::<String, _>("sport"))
+        .await
+    {
+        Ok(()) => {}
+        // removed by hand between the ETag read and the PATCH
+        Err(err)
+            if err
+                .downcast_ref::<ApiError>()
+                .is_some_and(|e| e.status == 404) =>
+        {
+            return mark_removed(db, id).await;
+        }
+        Err(err) => return Err(err),
+    }
     sqlx::query("UPDATE uploads SET status = 'done', updated_at = now() WHERE id = $1")
         .bind(id)
         .execute(db)
         .await?;
+    Ok(())
+}
+
+/// The copy was removed by hand in Endurain: respect that.
+async fn mark_removed(db: &PgPool, id: Uuid) -> Result<()> {
+    sqlx::query("UPDATE uploads SET status = 'deleted', updated_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    tracing::info!(%id, "dog copy was removed in Endurain");
     Ok(())
 }
 
