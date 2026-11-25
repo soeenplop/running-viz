@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail};
-use chrono::{DateTime, Datelike, Duration, NaiveDate, SecondsFormat, Utc};
+use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 use chrono_tz::Europe::Berlin;
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -190,12 +190,7 @@ pub async fn mirror(
     accounts: &[(String, Option<String>, SparkyAccount)],
     now: DateTime<Utc>,
 ) -> Result<()> {
-    let today = now.with_timezone(&Berlin).date_naive();
-    let first = today.with_day(1).context("first of month")?;
-    let since_day = (first - Duration::days(1))
-        .with_day(1)
-        .context("first of last month")?;
-    let since = since_day.and_hms_opt(0, 0, 0).expect("midnight").and_utc() - Duration::hours(2);
+    let (since_day, since) = crate::stats::window_start(now);
     let mut first_error = None;
     for (name, dog, account) in accounts {
         if let Err(err) = mirror_account(db, name, dog.as_deref(), account, since, since_day).await
@@ -264,6 +259,9 @@ async fn mirror_account(
     .await?;
     for (day, old_hash) in &known {
         if !wanted.contains_key(day) && !old_hash.is_empty() {
+            // pending first: a DELETE that succeeds remotely but fails for us must not
+            // leave the old hash, or a later identical payload would be skipped
+            store(db, name, *day, PENDING).await?;
             account.clear_day(*day).await?;
             store(db, name, *day, "").await?;
         }

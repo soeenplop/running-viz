@@ -318,3 +318,79 @@ async fn reconcile_covers_solo_runs() {
         .unwrap();
     assert!(gone);
 }
+
+/// A DELETE that fails for us must not leave the old hash: when the dog is added back
+/// before the retry, the identical day is sent again.
+#[tokio::test]
+async fn failed_clear_then_restore_sends_the_day_again() {
+    let Some(db) = fresh_db().await else { return };
+    let now = Utc::now();
+    let day = (now - Duration::days(1)).date_naive();
+    let r = run(&format!("{day}T06:00:00Z"), 30, 5.0);
+    insert_run(&db, &r, "run").await;
+    sqlx::query(
+        "INSERT INTO uploads (id, kind, fit_file_id, run_id, dog, idempotency_key, status, job_id, endurain_activity_id)
+         SELECT gen_random_uuid(), 'copy', fit_file_id, id, 'nanuq', 'k1', 'done', 'j', 'c' FROM runs WHERE id = $1",
+    )
+    .bind(r.id)
+    .execute(&db)
+    .await
+    .unwrap();
+    let s = sparky_server().await;
+    Mock::given(method("GET"))
+        .and(path("/api/exercise-entries/by-date"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": "copy", "exercise_snapshot": { "source": "running-viz", "source_id": r.id.to_string() } }
+        ])))
+        .mount(&s)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(504))
+        .mount(&s)
+        .await;
+    let dog = vec![(
+        "nanuq".to_string(),
+        Some("nanuq".to_string()),
+        SparkyAccount::new(reqwest::Client::new(), &s.uri(), "k"),
+    )];
+    sparky::mirror(&db, &dog, now).await.unwrap();
+    assert_eq!(posts(&s).await.len(), 1);
+
+    // Nanuq removed: the clear fails (504) ...
+    sqlx::query("UPDATE uploads SET status = 'deleted'")
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(sparky::mirror(&db, &dog, now).await.is_err());
+    // ... and is added back before the retry: the same day must be sent again
+    sqlx::query("UPDATE uploads SET status = 'done'")
+        .execute(&db)
+        .await
+        .unwrap();
+    sparky::mirror(&db, &dog, now).await.unwrap();
+    assert_eq!(posts(&s).await.len(), 2);
+}
+
+/// The reconcile window starts at Berlin midnight: a run on the 1st at 00:30 Berlin
+/// (still the previous day in UTC) is checked too.
+#[tokio::test]
+async fn reconcile_window_uses_berlin_midnight() {
+    let Some(db) = fresh_db().await else { return };
+    let r = run("2026-12-31T23:30:00Z", 30, 5.0); // 1 Jan 2027 00:30 Berlin
+    insert_run(&db, &r, "run").await;
+    let endurain = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&endurain)
+        .await;
+    let me = running_viz::endurain::Account::new(reqwest::Client::new(), &endurain.uri(), "k");
+    running_viz::companions::reconcile(&db, &me, t("2027-02-15T12:00:00Z"))
+        .await
+        .unwrap();
+    let gone: bool = sqlx::query_scalar("SELECT gone FROM runs WHERE id = $1")
+        .bind(r.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert!(gone);
+}
