@@ -143,7 +143,9 @@ pub async fn plan_copies(db: &PgPool, dogs: &[String]) -> Result<()> {
             match (want, active) {
                 // an active copy has handled this claim: remember it, so a later manual
                 // removal is not undone by the same (already handled) claim
-                (true, Some((id, _, _, _))) => {
+                // (not while a deletion is pending: that one finishes first, and the claim
+                // then creates the next generation)
+                (true, Some((id, status, _, _))) if status != "delete_pending" => {
                     sqlx::query(
                         "UPDATE uploads SET requested_at = GREATEST(requested_at, $2) WHERE id = $1",
                     )

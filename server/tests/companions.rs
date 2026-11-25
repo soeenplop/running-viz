@@ -885,3 +885,56 @@ async fn rename_404_counts_as_removed() {
         vec![("nanuq".into(), "deleted".into(), 0)]
     );
 }
+
+/// Re-adding a dog while its copy's deletion is still pending: the deletion finishes,
+/// then the next planning pass queues a new generation.
+#[tokio::test]
+async fn re_add_during_pending_deletion_creates_next_generation() {
+    let Some(db) = fresh_db().await else { return };
+    let r = run(&db, "2026-12-16T07:00:00Z", 30).await;
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-16T07:00:00Z"),
+        Some("2026-12-16T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-16T08:00:00Z").await;
+    set_copies_done(&db, r).await;
+    claim(
+        &db,
+        &[],
+        Some("2026-12-16T07:00:00Z"),
+        Some("2026-12-16T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-16T08:01:00Z").await;
+    assert_eq!(
+        copies(&db, r).await,
+        vec![("nanuq".into(), "delete_pending".into(), 0)]
+    );
+    // re-added before the DELETE went through
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-12-16T07:00:00Z"),
+        Some("2026-12-16T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-12-16T08:02:00Z").await;
+    // the worker finishes the deletion ...
+    sqlx::query("UPDATE uploads SET status = 'deleted' WHERE run_id = $1")
+        .bind(r)
+        .execute(&db)
+        .await
+        .unwrap();
+    // ... and the next pass brings Nanuq back
+    plan(&db, "2026-12-16T08:03:00Z").await;
+    assert_eq!(
+        copies(&db, r).await,
+        vec![
+            ("nanuq".into(), "deleted".into(), 0),
+            ("nanuq".into(), "pending".into(), 1)
+        ]
+    );
+}
