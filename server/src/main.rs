@@ -98,6 +98,23 @@ async fn main() -> Result<()> {
         tracing::info!("SparkyFitness mirror off (SPARKY_URL / SPARKY_KEY_* not set)");
     }
 
+    // The optional mirror runs in its own task, so a slow SparkyFitness never delays
+    // the import, the dog copies or the display (one pass at a time, every 5 minutes).
+    if !sparky_accounts.is_empty() {
+        let mirror_db = db.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                tick.tick().await;
+                if let Err(err) =
+                    sparky::mirror(&mirror_db, &sparky_accounts, chrono::Utc::now()).await
+                {
+                    tracing::warn!("sparkyfitness mirror failed: {err:#}");
+                }
+            }
+        });
+    }
+
     // Sync loop: every 5 minutes, or right away when the Dropbox webhook fires.
     let (loop_db, loop_display, loop_status, since) = (
         db.clone(),
@@ -130,12 +147,6 @@ async fn main() -> Result<()> {
             .await
             {
                 tracing::warn!("dog copies failed: {err:#}");
-            }
-            if !sparky_accounts.is_empty()
-                && let Err(err) =
-                    sparky::mirror(&loop_db, &sparky_accounts, chrono::Utc::now()).await
-            {
-                tracing::warn!("sparkyfitness mirror failed: {err:#}");
             }
             sync::refresh(&accounts, &loop_display, &loop_status).await;
         }

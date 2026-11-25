@@ -21,6 +21,9 @@ use crate::{gpx, stats::DOG_RUN_TYPES, stats::MY_RUN_TYPES};
 /// The `source` of every record we send; entries of other sources are never touched.
 pub const SOURCE: &str = "running-viz";
 
+/// `sparky_days.payload_hash` while a POST for that day may be in flight.
+const PENDING: &str = "pending";
+
 /// One SparkyFitness account.
 #[derive(Clone)]
 pub struct SparkyAccount {
@@ -79,12 +82,15 @@ impl SparkyAccount {
             .json()
             .await
             .context("unexpected sparkyfitness response")?;
-        let ours = format!("Source: {SOURCE},");
         for e in entries {
-            let notes = e["notes"].as_str().unwrap_or_default();
-            let Some(id) = e["id"].as_str().filter(|_| notes.starts_with(&ours)) else {
+            // ownership from the stored import metadata, never from the editable notes
+            let snapshot = &e["exercise_snapshot"];
+            if snapshot["source"].as_str() != Some(SOURCE)
+                || snapshot["source_id"].as_str().is_none()
+            {
                 continue;
-            };
+            }
+            let id = e["id"].as_str().context("sparkyfitness entry without id")?;
             let res = self
                 .http
                 .delete(format!("{}/api/exercise-entries/{id}", self.base))
@@ -135,7 +141,7 @@ pub fn record(run: &Run) -> Value {
         "type": "ExerciseSession",
         "timestamp": run.start.to_rfc3339_opts(SecondsFormat::Secs, true),
         "record_timezone": "Europe/Berlin",
-        "duration": (run.end - run.start).num_seconds().max(0),
+        "duration": duration_s(run),
         "distance": f64::from(run.distance_m) / 1000.0,
         "activityType": "running",
         "source": SOURCE,
@@ -145,6 +151,17 @@ pub fn record(run: &Run) -> Value {
         r["gps_points"] = Value::Array(points);
     }
     r
+}
+
+/// Moving time from the FIT file (pauses excluded); elapsed time if the file has none.
+fn duration_s(run: &Run) -> i64 {
+    crate::fit::summary(&run.fit)
+        .ok()
+        .and_then(|s| s.timer_s)
+        .map_or_else(
+            || (run.end - run.start).num_seconds().max(0),
+            |t| t.round() as i64,
+        )
 }
 
 /// Groups runs by their local (Europe/Berlin) start date into day payloads.
@@ -256,6 +273,9 @@ async fn mirror_account(
         if known.iter().any(|(d, old)| d == day && *old == h) {
             continue;
         }
+        // recorded before the request: a day whose POST may have reached SparkyFitness is
+        // reconciled later even if its runs disappear or revert to the previous content
+        store(db, name, *day, PENDING).await?;
         account.post_day(records).await?;
         store(db, name, *day, &h).await?;
         tracing::info!(account = name, %day, runs = records.len(), "mirrored to sparkyfitness");

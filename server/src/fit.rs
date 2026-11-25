@@ -15,6 +15,8 @@ pub struct Summary {
     pub end: DateTime<Utc>,
     pub distance_m: i32,
     pub has_gps: bool,
+    /// Moving time in seconds (pauses excluded), if the file has it.
+    pub timer_s: Option<f64>,
 }
 
 pub fn summary(bytes: &[u8]) -> Result<Summary> {
@@ -45,6 +47,7 @@ pub fn summary(bytes: &[u8]) -> Result<Summary> {
         end,
         distance_m: float(session, "total_distance").unwrap_or(0.0).round() as i32,
         has_gps,
+        timer_s: float(session, "total_timer_time").filter(|t| *t > 0.0),
     })
 }
 

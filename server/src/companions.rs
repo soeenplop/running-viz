@@ -413,16 +413,16 @@ async fn touch(db: &PgPool, id: Uuid) -> Result<()> {
     Ok(())
 }
 
-/// Once a day: originals with copies (current and previous month) that were deleted in
-/// Endurain are marked `gone`, so `plan_copies` removes their copies. Only a 404 counts.
+/// Once a day: originals of the current and previous month that were deleted in Endurain
+/// are marked `gone`, so their dog copies and SparkyFitness mirror entries are removed.
+/// Only a 404 counts.
 pub async fn reconcile(db: &PgPool, me: &Account, now: DateTime<Utc>) -> Result<()> {
     let this_month = now.date_naive().with_day(1).context("first of month")?;
     let since = (this_month - Duration::days(1))
         .with_day(1)
         .context("first of last month")?;
     let runs: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT DISTINCT r.id, r.endurain_activity_id FROM runs r JOIN uploads u ON u.run_id = r.id
-         WHERE u.kind = 'copy' AND u.status <> 'deleted' AND NOT r.gone AND r.start_time >= $1",
+        "SELECT r.id, r.endurain_activity_id FROM runs r WHERE NOT r.gone AND r.start_time >= $1",
     )
     .bind(since.and_hms_opt(0, 0, 0).expect("midnight").and_utc())
     .fetch_all(db)

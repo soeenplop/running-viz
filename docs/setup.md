@@ -68,7 +68,7 @@ To compare [SparkyFitness](https://github.com/CodeWithCJ/SparkyFitness) with End
 - One SparkyFitness account each for me, Nanuq and Anori; one API key per account (Settings → API keys, or `POST /api/auth/api-key/create` while signed in).
 - Set `SPARKY_URL` and `SPARKY_KEY_SOEREN`, `SPARKY_KEY_NANUQ`, `SPARKY_KEY_ANORI` (an account without key is skipped).
 - What is sent: per account and day, all runs of that day at once (SparkyFitness replaces a day's entries of one source on every import), with start, duration, distance and the GPS track. No heart rate or other body data. Dogs get the runs they have a finished Endurain copy of.
-- Only the current and the previous month are mirrored; a day is only sent again when it changed. If a day loses all its runs, only the entries created by running-viz (`Source: running-viz`) are deleted there.
+- Only the current and the previous month are mirrored; a day is only sent again when it changed. If a day loses all its runs (e.g. a run was deleted in Endurain), only entries that SparkyFitness stored with source `running-viz` are deleted there; manual entries are never touched. The mirror runs in its own task, so SparkyFitness being slow or down never delays the display.
 
 ## 5. API key renewal
 

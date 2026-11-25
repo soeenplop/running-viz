@@ -152,13 +152,16 @@ async fn mirror_sends_whole_days_once_and_clears_emptied_days() {
         .execute(&db)
         .await
         .unwrap();
+    let snap = |source: &str| json!({ "source": source, "source_id": "x" });
     Mock::given(method("GET"))
         .and(path("/api/exercise-entries/by-date"))
         .and(query_param("selectedDate", day.to_string()))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!([
-            { "id": "ours", "notes": "Source: running-viz, Activity Type: running" },
-            { "id": "other", "notes": "Source: running-viz-probe, Activity Type: running" },
-            { "id": "manual", "notes": null }
+            { "id": "ours", "notes": "Source: running-viz, Activity Type: running", "exercise_snapshot": snap("running-viz") },
+            { "id": "ours-edited", "notes": "edited by hand", "exercise_snapshot": snap("running-viz") },
+            { "id": "manual-copied-note", "notes": "Source: running-viz, Activity Type: running", "exercise_snapshot": snap("manual") },
+            { "id": "other", "notes": "Source: running-viz-probe, Activity Type: running", "exercise_snapshot": snap("running-viz-probe") },
+            { "id": "no-snapshot", "notes": "Source: running-viz, Activity Type: running" }
         ])))
         .mount(&s)
         .await;
@@ -175,7 +178,14 @@ async fn mirror_sends_whole_days_once_and_clears_emptied_days() {
         .filter(|r| r.method.as_str() == "DELETE")
         .map(|r| r.url.path().to_owned())
         .collect();
-    assert_eq!(deleted, vec!["/api/exercise-entries/ours"]);
+    assert_eq!(
+        deleted,
+        vec![
+            "/api/exercise-entries/ours",
+            "/api/exercise-entries/ours-edited"
+        ],
+        "ownership comes from the stored source, not from the notes"
+    );
 }
 
 #[tokio::test]
@@ -208,4 +218,103 @@ async fn dogs_get_only_runs_with_a_finished_copy() {
     let records = sent[0].as_array().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["source_id"], with.id.to_string());
+}
+
+#[test]
+fn duration_is_moving_time() {
+    let start = t("2026-12-03T07:00:00Z");
+    let paused = Run {
+        id: Uuid::new_v4(),
+        start,
+        end: start + Duration::minutes(40),
+        distance_m: 5000,
+        fit: fit_file(&Workout {
+            timer_s: Some(30 * 60),
+            ..Workout::run(&start.to_rfc3339(), 40 * 60, 5000)
+        }),
+    };
+    assert_eq!(
+        sparky::record(&paused)["duration"],
+        json!(1800),
+        "10 min pause excluded"
+    );
+}
+
+/// A POST that may have reached SparkyFitness (but failed for us) is still cleaned up
+/// if the run disappears before the retry.
+#[tokio::test]
+async fn failed_post_is_reconciled_after_the_run_disappears() {
+    let Some(db) = fresh_db().await else { return };
+    let now = Utc::now();
+    let day = (now - Duration::days(1)).date_naive();
+    let r = run(&format!("{day}T06:00:00Z"), 30, 5.0);
+    insert_run(&db, &r, "run").await;
+    let s = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/health-data"))
+        .respond_with(ResponseTemplate::new(504))
+        .mount(&s)
+        .await;
+    let me = vec![(
+        "soeren".to_string(),
+        None,
+        SparkyAccount::new(reqwest::Client::new(), &s.uri(), "k"),
+    )];
+    assert!(sparky::mirror(&db, &me, now).await.is_err());
+
+    sqlx::query("UPDATE runs SET gone = TRUE")
+        .execute(&db)
+        .await
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path("/api/exercise-entries/by-date"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            { "id": "accepted-anyway", "exercise_snapshot": { "source": "running-viz", "source_id": r.id.to_string() } }
+        ])))
+        .mount(&s)
+        .await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&s)
+        .await;
+    sparky::mirror(&db, &me, now).await.unwrap();
+    let deleted = s
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "DELETE")
+        .count();
+    assert_eq!(deleted, 1);
+}
+
+/// Deleting a solo run (no dog copy) in Endurain is noticed by the daily reconcile,
+/// so the mirror removes it as well.
+#[tokio::test]
+async fn reconcile_covers_solo_runs() {
+    let Some(db) = fresh_db().await else { return };
+    let r = run(
+        &format!(
+            "{}T06:00:00Z",
+            (Utc::now() - Duration::days(1)).date_naive()
+        ),
+        30,
+        5.0,
+    );
+    insert_run(&db, &r, "treadmill_run").await;
+    let endurain = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&endurain)
+        .await;
+    let me = running_viz::endurain::Account::new(reqwest::Client::new(), &endurain.uri(), "k");
+    running_viz::companions::reconcile(&db, &me, Utc::now())
+        .await
+        .unwrap();
+    let gone: bool = sqlx::query_scalar("SELECT gone FROM runs WHERE id = $1")
+        .bind(r.id)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert!(gone);
 }
