@@ -56,9 +56,10 @@ const PAPER: BinaryColor = BinaryColor::Off;
 pub fn render(stats: &Stats) -> Bitmap {
     let mut b = Bitmap::default();
     header(&mut b, stats.today);
-    me(&mut b, &stats.me);
+    let month = month_progress(stats.today);
+    me(&mut b, &stats.me, month);
     for (i, dog) in stats.dogs.iter().take(2).enumerate() {
-        dog_block(&mut b, dog, 44 + i as i32 * 50);
+        dog_block(&mut b, dog, 44 + i as i32 * 50, month);
     }
     calendar(&mut b, stats.today, &stats.my_daily_km);
     b
@@ -77,7 +78,7 @@ fn header(b: &mut Bitmap, today: NaiveDate) {
     fill(b, 0, 26, 400, 2, INK);
 }
 
-fn me(b: &mut Bitmap, r: &Runner) {
+fn me(b: &mut Bitmap, r: &Runner, month: f64) {
     text(
         b,
         &r.name.to_uppercase(),
@@ -98,7 +99,7 @@ fn me(b: &mut Bitmap, r: &Runner) {
         Alignment::Left,
         INK,
     );
-    bar(b, 8, 106, 236, 14, r.km / r.goal_km);
+    bar(b, 8, 106, 236, 14, r.km / r.goal_km, month);
     text(
         b,
         &pace(r.pace_s_per_km),
@@ -111,7 +112,7 @@ fn me(b: &mut Bitmap, r: &Runner) {
     fill(b, 258, 36, 1, 100, INK);
 }
 
-fn dog_block(b: &mut Bitmap, r: &Runner, y: i32) {
+fn dog_block(b: &mut Bitmap, r: &Runner, y: i32, month: f64) {
     text(
         b,
         &r.name.to_uppercase(),
@@ -148,7 +149,7 @@ fn dog_block(b: &mut Bitmap, r: &Runner, y: i32) {
         Alignment::Left,
         INK,
     );
-    bar(b, 272, y + 28, 120, 10, r.km / r.goal_km);
+    bar(b, 272, y + 28, 120, 10, r.km / r.goal_km, month);
 }
 
 fn calendar(b: &mut Bitmap, today: NaiveDate, daily: &[f64]) {
@@ -283,12 +284,24 @@ fn outline(b: &mut Bitmap, x: i32, y: i32, w: i32, h: i32) {
         .unwrap();
 }
 
-fn bar(b: &mut Bitmap, x: i32, y: i32, w: i32, h: i32, progress: f64) {
+/// A progress bar with a tick where the month stands: ahead of plan if the fill passes it.
+fn bar(b: &mut Bitmap, x: i32, y: i32, w: i32, h: i32, progress: f64, month: f64) {
     outline(b, x, y, w, h);
     let inner = ((w - 4) as f64 * progress.clamp(0.0, 1.0)).round() as i32;
     if inner > 0 {
         fill(b, x + 2, y + 2, inner, h - 4, INK);
     }
+    // 2 px tick, sticking out 2 px above and below; white where it crosses the fill
+    let tick = (x + 1 + ((w - 4) as f64 * month.clamp(0.0, 1.0)).round() as i32).min(x + w - 3);
+    fill(b, tick, y - 2, 2, 2, INK);
+    fill(b, tick, y + h, 2, 2, INK);
+    let on_fill = tick + 1 < x + 2 + inner;
+    fill(b, tick, y + 1, 2, h - 2, if on_fill { PAPER } else { INK });
+}
+
+/// Share of the month that is over by the end of `today` (1.0 on the last day).
+fn month_progress(today: NaiveDate) -> f64 {
+    f64::from(today.day()) / f64::from(days_in_month(today))
 }
 
 fn days_in_month(d: NaiveDate) -> u32 {
@@ -358,6 +371,13 @@ mod tests {
             days_in_month(NaiveDate::from_ymd_opt(2028, 2, 1).unwrap()),
             29
         );
+    }
+
+    #[test]
+    fn month_progress_ends_at_one() {
+        let d = |m, d| NaiveDate::from_ymd_opt(2026, m, d).unwrap();
+        assert_eq!(month_progress(d(11, 15)), 0.5);
+        assert_eq!(month_progress(d(11, 30)), 1.0);
     }
 
     #[test]
