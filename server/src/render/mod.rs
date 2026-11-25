@@ -59,7 +59,7 @@ pub fn render(stats: &Stats) -> Bitmap {
     let month = month_progress(stats.today);
     me(&mut b, &stats.me, month);
     for (i, dog) in stats.dogs.iter().take(2).enumerate() {
-        dog_block(&mut b, dog, 44 + i as i32 * 50, month);
+        dog_block(&mut b, dog, 44 + i as i32 * 52, month);
     }
     calendar(&mut b, stats);
     b
@@ -135,7 +135,7 @@ fn dog_block(b: &mut Bitmap, r: &Runner, y: i32, month: f64) {
         b,
         &km(r.km),
         272,
-        y + 22,
+        y + 20,
         Font::Medium,
         Alignment::Left,
         INK,
@@ -144,12 +144,12 @@ fn dog_block(b: &mut Bitmap, r: &Runner, y: i32, month: f64) {
         b,
         &format!(" / {} KM", goal(r.goal_km)),
         end + 1,
-        y + 22,
+        y + 20,
         Font::Small,
         Alignment::Left,
         INK,
     );
-    bar(b, 272, y + 28, 120, 10, r.km / r.goal_km, month);
+    bar(b, 272, y + 26, 120, 10, r.km / r.goal_km, month);
 }
 
 fn calendar(b: &mut Bitmap, stats: &Stats) {
