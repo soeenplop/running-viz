@@ -194,15 +194,8 @@ fn calendar(b: &mut Bitmap, stats: &Stats) {
             continue;
         }
         let ran = |r: &Runner| r.daily_km.get(day as usize - 1).copied().unwrap_or(0.0);
-        // who ran: one initial per runner on the right edge, me on top, the dogs below
-        // 6-week months have 20 px rows, 5-week months 25 px: pick a font that fits three letters
-        let (font, cap) = if h >= 24 {
-            (Font::Tiny, 6)
-        } else {
-            (Font::Micro, 5)
-        };
-        let pitch = cap + 1;
-        let top = y + 1 + (h - 3 * pitch) / 2;
+        // who ran, below the day number: S N A, each letter in its own slot
+        let base = y + h - 3;
         for (i, r) in runners.iter().enumerate() {
             if ran(r) > 0.0 {
                 let initial: String = r
@@ -211,39 +204,38 @@ fn calendar(b: &mut Bitmap, stats: &Stats) {
                     .take(1)
                     .flat_map(char::to_uppercase)
                     .collect();
-                let baseline = top + pitch * i as i32 + cap;
                 text(
                     b,
                     &initial,
-                    x + w - 2,
-                    baseline,
-                    font,
-                    Alignment::Right,
+                    x + 4 + 6 * i as i32,
+                    base,
+                    Font::Tiny,
+                    Alignment::Left,
                     color,
                 );
             }
         }
-        // my km as "10" with a small raised "5"
+        // my km as "10" with a small "5" beside it, tops aligned (digits are 12 px and 8 px tall)
         let k = ran(&stats.me);
         if k > 0.0 {
             let tenths = (k * 10.0).round() as i64;
-            let right = x + w - 9;
+            let right = x + w - 3;
             let decimal = (tenths % 10).to_string();
             text(
                 b,
                 &decimal,
                 right,
-                y + h - 11,
+                base - 4,
                 Font::Small,
                 Alignment::Right,
                 color,
             );
-            let left = right - width(&decimal, Font::Small) - 1;
+            let left = right - width(&decimal, Font::Small) - 2;
             text(
                 b,
                 &(tenths / 10).to_string(),
                 left,
-                y + h - 4,
+                base,
                 Font::Header,
                 Alignment::Right,
                 color,
@@ -262,7 +254,6 @@ enum Font {
     Label,
     Small,
     Tiny,
-    Micro,
 }
 
 fn style(font: Font, color: BinaryColor) -> U8g2TextStyle<BinaryColor> {
@@ -273,7 +264,6 @@ fn style(font: Font, color: BinaryColor) -> U8g2TextStyle<BinaryColor> {
         Font::Label => U8g2TextStyle::new(fonts::u8g2_font_helvB10_tf, color),
         Font::Small => U8g2TextStyle::new(fonts::u8g2_font_helvB08_tf, color),
         Font::Tiny => U8g2TextStyle::new(fonts::u8g2_font_5x7_tf, color),
-        Font::Micro => U8g2TextStyle::new(fonts::u8g2_font_4x6_tf, color),
     }
 }
 
