@@ -63,7 +63,7 @@ Stack: `axum`, `tokio`, `sqlx` (Postgres + migrations), `reqwest` (rustls), `ser
 5. **Stats refresh**: for each of the 3 accounts: monthly run goal + current month's activities (Europe/Berlin, paginated) of types `run`, `trail_run`, `track_run` → total km, avg pace (Σ timer time / Σ distance), km per day → in-memory state → re-render; ETag = hash of the bitmap. On upstream failure the last good stats stay visible.
 6. **Reconcile** (once a day): only originals *with copies*, current and previous month. A `404` means deleted → delete the copies. Auth errors and timeouts are just retried, never treated as deletion. Conditional writes always fetch a fresh version first. `Retry-After` is honored.
 
-**HTTP API** (`running-api.soeenplop.dev`):
+**HTTP API** (`running-viz-api.soeenplop.dev`):
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | GET | `/healthz` | – | liveness + last sync time |
@@ -115,7 +115,7 @@ Based on the approved mockup, plus average pace:
 
 ### 3.5 `web/` – fullscreen page
 
-One `index.html` (no build step), embedded into the server binary and served at `/` (domain `running.soeenplop.dev` points at the same container). Shows `/display.png` centered on a dark background, reloads it every minute, fullscreen on click.
+One `index.html` (no build step), embedded into the server binary and served at `/` (domain `running-viz.soeenplop.dev` points at the same container). Shows `/display.png` centered on a dark background, reloads it every minute, fullscreen on click.
 
 ### 3.6 `firmware/` – ESP8266 (C++, PlatformIO, battery)
 
@@ -148,7 +148,7 @@ One `index.html` (no build step), embedded into the server binary and served at 
 | 9 | `feat/firmware` | `feat(firmware): esp8266 e-paper client` |
 | 10 | `feat/dokploy` | `chore(deploy): dokploy deployment` (needs user, last) |
 
-Each PR: Conventional Commits, review by GPT-6.2 Astra in PR comments, squash-merge after `✅ Approved by GPT-6.2 Astra`.
+Each PR: Conventional Commits, review by GPT-6.2 Astra in PR comments, merge (merge commit, no squash) after `✅ Approved by GPT-6.2 Astra`.
 
 ## 6. Risks and open points
 

@@ -56,7 +56,7 @@ HealthFit exports every workout as a FIT file to Dropbox (`/Apps/HealthFitExport
 3. Add to `deploy/.env`: `DROPBOX_APP_KEY`, `DROPBOX_APP_SECRET`, `DROPBOX_REFRESH_TOKEN`
    (optional: `DROPBOX_FOLDER`, default `/Apps/HealthFitExporter`; `DROPBOX_IMPORT_SINCE`, default `2026-11-01`).
 4. Optional, after deployment: under **Webhooks** in the App Console, add
-   `https://running-api.soeenplop.dev/dropbox/webhook`. New runs then show up within seconds;
+   `https://running-viz-api.soeenplop.dev/dropbox/webhook`. New runs then show up within seconds;
    without it the server checks every 5 minutes.
 
 What the import does: every new FIT file is uploaded to my Endurain account. Files from before `DROPBOX_IMPORT_SINCE`, unreadable files, and second exports of the same workout (same start ±60 s) are skipped and remembered, so they are not checked again. Uploads that Endurain answers ambiguously are marked `needs_attention` in the `uploads` table and left alone.
