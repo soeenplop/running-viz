@@ -7,7 +7,6 @@
 // Deep sleep wake-up needs GPIO16 wired to RST (new board revision, see README).
 
 #include <Arduino.h>
-#include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
 #include <GxEPD2_BW.h>
 #include <Ticker.h>
@@ -39,17 +38,17 @@ static const size_t FRAME_BYTES = WIDTH * HEIGHT / 8;  // 15000
 static const uint16_t ROWS_PER_CHUNK = 8;              // 400 bytes per chunk
 static const uint64_t SLEEP_US = 30ULL * 60 * 1000 * 1000;
 static const uint32_t WIFI_TIMEOUT_MS = 15000;
-static const uint32_t HTTP_TIMEOUT_MS = 15000;     // TLS + headers + body, in total
-static const uint32_t WAKE_BUDGET_MS = 45000;      // whole wake, enforced in code
+static const uint32_t HTTP_TIMEOUT_MS = 15000;     // TLS + request + headers + body, in total
+static const uint32_t WAKE_BUDGET_MS = 45000;      // whole wake; also the hard cut-off
 static const uint32_t REFRESH_RESERVE_MS = 10000;  // time a full refresh may need
-static const uint32_t HARD_LIMIT_MS = WAKE_BUDGET_MS + 15000;  // last-resort cut-off
 
-// The last shown ETag survives deep sleep in RTC memory.
+// Survives deep sleep and restarts: the last shown ETag and a pending cooldown.
 struct RtcState {
   uint32_t magic;
+  uint32_t cooldown;  // old board: set by the hard cut-off, consumed on the next boot
   char etag[40];
 };
-static const uint32_t RTC_MAGIC = 0x52564931;  // "RVI1"
+static const uint32_t RTC_MAGIC = 0x52564932;  // "RVI2"
 static RtcState rtc;
 static Ticker hardLimit;
 
@@ -98,64 +97,109 @@ static bool connectWifi() {
   return true;
 }
 
-// Reads exactly `len` bytes before `deadline`, or fails (stream ended or too late).
-static bool readExactly(WiFiClient* stream, uint8_t* buf, size_t len, uint32_t deadline) {
+// Reads exactly `len` bytes before `deadline`, or fails (connection closed or too late).
+static bool readExactly(WiFiClient& c, uint8_t* buf, size_t len, uint32_t deadline) {
   size_t got = 0;
   while (got < len) {
     if (remaining(deadline) == 0) return false;
-    if (!stream->connected() && stream->available() == 0) return false;
-    const int n = stream->read(buf + got, len - got);
-    if (n > 0) {
-      got += n;
-    } else {
-      delay(5);
+    if (c.available() == 0) {
+      if (!c.connected()) return false;
+      delay(2);
+      continue;
     }
+    const int n = c.read(buf + got, len - got);
+    if (n > 0) got += n;
   }
   return true;
 }
 
+// Reads one header line (without CRLF) before `deadline`; false on timeout or close.
+static bool readLine(WiFiClient& c, String& line, uint32_t deadline) {
+  line = "";
+  while (true) {
+    uint8_t b;
+    if (!readExactly(c, &b, 1, deadline)) return false;
+    if (b == '\n') break;
+    if (b != '\r' && line.length() < 256) line += static_cast<char>(b);
+  }
+  return true;
+}
+
+struct Response {
+  int status = 0;
+  long length = -1;
+  String etag;
+};
+
+// Minimal HTTP/1.1 GET: every byte of the status line and headers counts against the
+// same absolute deadline (unlike HTTPClient, whose per-line timeouts restart).
+static bool get(WiFiClient& c, uint32_t deadline, Response& r) {
+  c.setTimeout(remaining(deadline));
+  if (!c.connect(DISPLAY_HOST, 443) || remaining(deadline) == 0) return false;
+  String req = String("GET ") + DISPLAY_PATH + " HTTP/1.1\r\nHost: " + DISPLAY_HOST +
+               "\r\nUser-Agent: running-viz\r\nConnection: close\r\n";
+  if (rtc.etag[0]) req += String("If-None-Match: ") + rtc.etag + "\r\n";
+  req += "\r\n";
+  c.print(req);
+
+  String line;
+  if (!readLine(c, line, deadline) || !line.startsWith("HTTP/1.")) return false;
+  r.status = line.substring(9, 12).toInt();
+  while (readLine(c, line, deadline)) {
+    if (line.isEmpty()) return true;  // end of headers
+    const int colon = line.indexOf(':');
+    if (colon < 0) continue;
+    String name = line.substring(0, colon);
+    name.toLowerCase();
+    String value = line.substring(colon + 1);
+    value.trim();
+    if (name == "content-length") r.length = value.toInt();
+    if (name == "etag") r.etag = value;
+    if (name == "transfer-encoding") r.length = -1;  // chunked: not supported
+  }
+  return false;
+}
+
 void setup() {
-  // Last resort if a blocking call (TLS, panel BUSY wait) overruns every soft deadline.
-  hardLimit.once_ms(HARD_LIMIT_MS, [] {
+  loadState();
 #ifdef NO_DEEP_SLEEP
-    ESP.restart();  // a timer callback must not block for 30 minutes
+  if (rtc.cooldown) {
+    // the previous wake hit the hard cut-off: keep the 30-minute interval
+    rtc.cooldown = 0;
+    saveState();
+    sleepCycle();
+  }
+#endif
+  // Hard cut-off at the wake budget, whatever is blocking (TLS, panel BUSY wait).
+  hardLimit.once_ms(WAKE_BUDGET_MS, [] {
+#ifdef NO_DEEP_SLEEP
+    rtc.cooldown = 1;  // a timer callback must not block: restart and wait on next boot
+    saveState();
+    ESP.restart();
 #else
     ESP.deepSleep(SLEEP_US);
 #endif
   });
   Serial.begin(115200);
   Serial.println("\nrunning-viz");
-  loadState();
 
   if (!connectWifi()) sleepNow("no wifi");
 
-  const uint32_t wakeDeadline = WAKE_BUDGET_MS;  // millis() counts from boot
-  const uint32_t httpDeadline = min<uint32_t>(millis() + HTTP_TIMEOUT_MS, wakeDeadline - REFRESH_RESERVE_MS);
+  const uint32_t httpDeadline = min<uint32_t>(millis() + HTTP_TIMEOUT_MS, WAKE_BUDGET_MS - REFRESH_RESERVE_MS);
   if (remaining(httpDeadline) == 0) sleepNow("no time left");
 
   // TLS without certificate check: the image is public and the worst case of a
   // man-in-the-middle is a wrong picture (decision in docs/PLAN.md).
   BearSSL::WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(remaining(httpDeadline));
-  HTTPClient http;
-  http.setTimeout(remaining(httpDeadline));
-  if (!http.begin(client, DISPLAY_URL)) sleepNow("bad url");
-  const char* keep[] = {"ETag"};
-  http.collectHeaders(keep, 1);
-  if (rtc.etag[0]) http.addHeader("If-None-Match", rtc.etag);
-
-  const int code = http.GET();
-  if (remaining(httpDeadline) == 0) sleepNow("http too slow");
-  if (code == HTTP_CODE_NOT_MODIFIED) sleepNow("unchanged");
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("http %d\n", code);
+  Response res;
+  if (!get(client, httpDeadline, res)) sleepNow("http failed or too slow");
+  if (res.status == 304) sleepNow("unchanged");
+  if (res.status != 200) {
+    Serial.printf("http %d\n", res.status);
     sleepNow("http error");
   }
-  if (http.getSize() != (int)FRAME_BYTES) sleepNow("unexpected size");
-  const String etag = http.header("ETag");
-  WiFiClient* stream = http.getStreamPtr();
-  if (stream == nullptr) sleepNow("connection closed");
+  if (res.length != (long)FRAME_BYTES) sleepNow("unexpected size");
 
   // Stream the frame into the panel RAM chunk by chunk; nothing is shown until refresh().
   // initial = false: no clearing refresh on the first write, so an incomplete download
@@ -164,15 +208,15 @@ void setup() {
   static uint8_t chunk[WIDTH / 8 * ROWS_PER_CHUNK];
   for (uint16_t y = 0; y < HEIGHT; y += ROWS_PER_CHUNK) {
     const uint16_t rows = min<uint16_t>(ROWS_PER_CHUNK, HEIGHT - y);
-    if (!readExactly(stream, chunk, WIDTH / 8 * rows, httpDeadline)) {
+    if (!readExactly(client, chunk, WIDTH / 8 * rows, httpDeadline)) {
       display.hibernate();
       sleepNow("incomplete frame");
     }
     display.epd2.writeImage(chunk, 0, y, WIDTH, rows);
   }
-  http.end();
+  client.stop();
 
-  if (remaining(wakeDeadline) < REFRESH_RESERVE_MS) {
+  if (remaining(WAKE_BUDGET_MS) < REFRESH_RESERVE_MS) {
     display.hibernate();
     sleepNow("no time left for refresh");
   }
@@ -183,7 +227,7 @@ void setup() {
   if (!shown) sleepNow("panel refresh timed out");
 
   // Remember the frame only after it is really on the panel.
-  strncpy(rtc.etag, etag.c_str(), sizeof(rtc.etag) - 1);
+  strncpy(rtc.etag, res.etag.c_str(), sizeof(rtc.etag) - 1);
   rtc.etag[sizeof(rtc.etag) - 1] = '\0';
   saveState();
   sleepNow("updated");
