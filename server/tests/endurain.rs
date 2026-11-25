@@ -77,14 +77,14 @@ async fn fetches_name_goal_and_all_pages() {
 
     let me = Account::new(reqwest::Client::new(), &server.uri(), "k");
     let today = NaiveDate::from_ymd_opt(2026, 12, 14).unwrap();
-    let (runner, month) = stats::runner(&me, stats::MY_RUN_TYPES, 1.0, today)
+    let runner = stats::runner(&me, stats::MY_RUN_TYPES, 1.0, today)
         .await
         .unwrap();
     assert_eq!(runner.name, "Sören");
     assert_eq!(runner.goal_km, 200.0);
     assert!((runner.km - 20.0).abs() < 1e-9);
     assert_eq!(runner.pace_s_per_km, Some(330));
-    assert!((month.daily_km[0] - 10.0).abs() < 1e-9 && month.daily_km[2] == 10.0);
+    assert!((runner.daily_km[0] - 10.0).abs() < 1e-9 && runner.daily_km[2] == 10.0);
 }
 
 #[tokio::test]
