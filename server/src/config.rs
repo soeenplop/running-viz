@@ -14,6 +14,10 @@ pub struct Config {
     pub shortcut_token: Option<String>,
     /// Workouts that started (Europe/Berlin) before this date are not imported.
     pub import_since: chrono::NaiveDate,
+    /// Push "Wer war dabei?" after import (`https://ntfy.sh/<topic>`); off if unset.
+    pub ntfy_url: Option<String>,
+    /// Where this server is reachable from the phone (for the push buttons).
+    pub public_url: String,
 }
 
 #[derive(Clone)]
@@ -54,6 +58,10 @@ impl Config {
             import_since: crate::import::parse_since(
                 std::env::var("DROPBOX_IMPORT_SINCE").ok().as_deref(),
             )?,
+            ntfy_url: std::env::var("NTFY_URL")
+                .ok()
+                .filter(|v| !v.trim().is_empty()),
+            public_url: std::env::var("PUBLIC_URL").unwrap_or_default(),
         })
     }
 }

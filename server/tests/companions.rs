@@ -1084,3 +1084,73 @@ async fn dogs_page_lists_runs_and_sets_dogs() {
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
 }
+
+/// Push after import: each new unanswered outdoor run once; its buttons work for that run only.
+#[tokio::test]
+async fn push_asks_once_and_signed_buttons_answer() {
+    use running_viz::notify::{self, Ntfy};
+    let Some(db) = fresh_db().await else { return };
+    let ntfy_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&ntfy_server)
+        .await;
+    let ntfy = Ntfy::from_url(
+        &format!("{}/secret-topic", ntfy_server.uri()),
+        "https://api.example",
+        "s3cret",
+        &dogs(),
+    )
+    .unwrap()
+    .unwrap();
+
+    let _old = run(&db, "2026-01-01T07:00:00Z", 30).await; // ended more than a day ago
+    let answered = run(&db, "2026-01-02T06:00:00Z", 30).await;
+    companions::assign(&db, answered, &[]).await.unwrap();
+    let new = run(&db, "2026-01-02T07:00:00Z", 30).await;
+    let now = t("2026-01-02T08:00:00Z");
+    notify::pass(&db, &ntfy, now).await.unwrap();
+    notify::pass(&db, &ntfy, now).await.unwrap();
+
+    let sent = ntfy_server.received_requests().await.unwrap();
+    assert_eq!(sent.len(), 1, "only the new run, only once");
+    let msg: serde_json::Value = serde_json::from_slice(&sent[0].body).unwrap();
+    assert_eq!(msg["topic"], "secret-topic");
+    let url = msg["actions"][1]["url"].as_str().unwrap();
+    assert!(url.starts_with(&format!("https://api.example/api/runs/{new}/dogs?sig=")));
+
+    // the button's request, as ntfy sends it: signed URL, no token
+    let path_and_query = url.trim_start_matches("https://api.example");
+    let put = |uri: String, body: &str| {
+        Request::builder()
+            .method("PUT")
+            .uri(uri)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_owned()))
+            .unwrap()
+    };
+    let r = app(db.clone())
+        .oneshot(put(path_and_query.to_owned(), r#"{"dogs":["nanuq"]}"#))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    // the same signature does not work for another run
+    let sig = url.split("sig=").nth(1).unwrap();
+    let r = app(db.clone())
+        .oneshot(put(
+            format!("/api/runs/{answered}/dogs?sig={sig}"),
+            r#"{"dogs":["nanuq"]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let dogs_of_new: Vec<String> = sqlx::query_scalar(
+        "SELECT dogs FROM companion_claims WHERE run_id = $1 ORDER BY received_at DESC LIMIT 1",
+    )
+    .bind(new)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(dogs_of_new, ["nanuq"]);
+}

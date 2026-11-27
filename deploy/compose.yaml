@@ -60,6 +60,8 @@ services:
       DROPBOX_REFRESH_TOKEN: ${DROPBOX_REFRESH_TOKEN:-}
       DROPBOX_FOLDER: ${DROPBOX_FOLDER:-/Apps/HealthFitExporter}
       DROPBOX_IMPORT_SINCE: ${DROPBOX_IMPORT_SINCE:-2026-11-01}
+      NTFY_URL: ${NTFY_URL:-}
+      PUBLIC_URL: ${PUBLIC_URL:-https://running-viz-api.soeenplop.dev}
       RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       db:

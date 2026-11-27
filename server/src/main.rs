@@ -5,7 +5,7 @@ use running_viz::{
     display::{self, Display},
     dropbox::Dropbox,
     endurain::Account,
-    http, import, stats,
+    http, import, notify, stats,
     sync::{self, SyncStatus},
 };
 use sqlx::postgres::PgPoolOptions;
@@ -67,6 +67,13 @@ async fn main() -> Result<()> {
         trigger: trigger.clone(),
         last: Default::default(),
     });
+    let ntfy = match (&config.ntfy_url, &config.shortcut_token) {
+        (Some(url), Some(token)) => {
+            notify::Ntfy::from_url(url, &config.public_url, token, &dog_names)?
+        }
+        (Some(_), None) => anyhow::bail!("NTFY_URL needs SHORTCUT_TOKEN (signs the buttons)"),
+        _ => None,
+    };
     if companions_api.is_none() {
         tracing::warn!("SHORTCUT_TOKEN not set: \"who came along\" endpoint disabled");
     }
@@ -107,6 +114,11 @@ async fn main() -> Result<()> {
             .await
             {
                 tracing::warn!("dog copies failed: {err:#}");
+            }
+            if let Some(ntfy) = &ntfy
+                && let Err(err) = notify::pass(&loop_db, ntfy, chrono::Utc::now()).await
+            {
+                tracing::warn!("push failed: {err:#}");
             }
             sync::refresh(&accounts, &loop_display, &loop_status).await;
         }

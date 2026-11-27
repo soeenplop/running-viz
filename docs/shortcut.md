@@ -13,6 +13,18 @@ API behind it (both need `Authorization: Bearer <token>`):
 - `GET /api/runs` → `{"dogs": [...], "runs": [{"id", "start_time", "end_time", "distance_m", "eligible", "dogs"}]}`; `dogs` is `null` while a run has no answer.
 - `PUT /api/runs/{id}/dogs` with `{"dogs": ["nanuq"]}` → `200 {"status":"saved","dogs":[...]}`, `404` for an unknown run.
 
+## Push after each run
+
+With `NTFY_URL` set (e.g. `https://ntfy.sh/<random topic>`), the server sends a push via [ntfy](https://ntfy.sh) for every new outdoor run with GPS that has no answer yet (once per run, only for runs that ended in the last 24 hours):
+
+> **Wer war dabei?** Lauf Fr 27.11., 08:47 · 5,4 km — [Beide] [Nanuq] [Anori]
+
+- A button saves the answer right away (like the page) and clears the push. Nobody came: just swipe it away.
+- Tapping the message opens the dogs page (`PUBLIC_URL/dogs`).
+- The buttons don't carry the token: each link has a signature (`?sig=`, HMAC of the run id with `SHORTCUT_TOKEN`) that is valid for that run only. The topic name is the only secret ntfy.sh sees; anyone who knows it can read the run times, so make it random.
+
+On the iPhone: install the ntfy app and subscribe to the topic (server `ntfy.sh`, topic = the part after the last `/`).
+
 ## The Shortcut
 
 After every workout the Apple Watch can trigger an iOS Shortcut that asks which dogs came along and tells the server. The server attaches the answer to the matching run and copies that run (GPS track only, no heart rate, cadence or power) into Nanuq's and Anori's Endurain accounts.

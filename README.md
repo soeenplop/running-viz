@@ -15,7 +15,7 @@ Apple Watch ─▶ HealthFit ─▶ Dropbox (FIT)
      e-paper display (ESP8266)          browser (fullscreen)
 ```
 
-Which dogs ran with me is set on a small page, **"Wer war dabei?"** (`/dogs`, see [docs/shortcut.md](docs/shortcut.md)): one tap per dog and run.
+After each new run the server asks **"Wer war dabei?"** by push (ntfy) with one-tap buttons; the page `/dogs` lists the latest runs for corrections (see [docs/shortcut.md](docs/shortcut.md)).
 
 ## Hardware
 
