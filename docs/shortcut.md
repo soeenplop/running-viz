@@ -1,8 +1,23 @@
-# "Who came along?" Shortcut
+# "Who came along?"
 
-After every workout the Apple Watch triggers an iOS Shortcut that asks which dogs came along and tells the server. The server attaches the answer to the matching run and copies that run (GPS track only, no heart rate, cadence or power) into Nanuq's and Anori's Endurain accounts.
+There are two ways to tell the server which dogs came along: the **dogs page** (recommended) and an iOS **Shortcut**. Both use the same token (`SHORTCUT_TOKEN`).
 
-## Server side
+## The dogs page
+
+Open `https://running-viz-api.soeenplop.dev/dogs#<SHORTCUT_TOKEN>` once on the iPhone and add it to the home screen. The token stays in the URL fragment, which the browser never sends to the server; the page also remembers it on the device.
+
+The page lists the newest 20 runs. Unanswered outdoor runs are highlighted. Tap **Nanuq**, **Anori** or **Keiner**; every tap is saved right away and is the newest answer for that run, so it also corrects older runs and earlier Shortcut answers. Treadmill runs and runs without GPS are shown but count only for me.
+
+API behind it (both need `Authorization: Bearer <token>`):
+
+- `GET /api/runs` → `{"dogs": [...], "runs": [{"id", "start_time", "end_time", "distance_m", "eligible", "dogs"}]}`; `dogs` is `null` while a run has no answer.
+- `PUT /api/runs/{id}/dogs` with `{"dogs": ["nanuq"]}` → `200 {"status":"saved","dogs":[...]}`, `404` for an unknown run.
+
+## The Shortcut
+
+After every workout the Apple Watch can trigger an iOS Shortcut that asks which dogs came along and tells the server. The server attaches the answer to the matching run and copies that run (GPS track only, no heart rate, cadence or power) into Nanuq's and Anori's Endurain accounts.
+
+### Server side
 
 `deploy/.env`:
 
@@ -24,7 +39,7 @@ Content-Type: application/json
 - At most one answer per minute (`429` otherwise). An answer that cannot be matched within 24 hours expires.
 - The answer is `202 {"status":"received","dogs":["anori","nanuq"]}`: the dogs as saved (lower case, sorted, without duplicates), so the Shortcut can show them. The copies follow within seconds, at the latest on the next 5-minute sync.
 
-## The Shortcut
+### Setup
 
 1. **Automation** (Shortcuts app → Automation → New): trigger *Apple Watch Workout*, *ends*, any workout type. Run immediately, no confirmation.
 2. Actions:
@@ -37,8 +52,8 @@ If your iOS version can't read the workout's dates, leave `started_at`/`ended_at
 
 ## Corrections
 
-- **Latest run** (only with workout times): run the Shortcut again by hand. It sends the same workout times, and the newest answer wins: dogs that are no longer selected lose their copy, newly selected dogs get one.
-- **Older runs:** delete or keep the dog's copy directly in Endurain. A copy you delete there stays deleted, unless you send a new answer for that run that includes the dog again.
+- **Any run** on the dogs page: the newest answer wins. Dogs that are no longer selected lose their copy, newly selected dogs get one.
+- **In Endurain:** a dog's copy you delete there stays deleted, unless a new answer for that run includes the dog again.
 - If you delete one of **your** runs in Endurain, the server removes its dog copies within a day.
 
 Copies are only made for outdoor runs with GPS (`run`, `trail_run`, `track_run`). Treadmill runs never get copies.

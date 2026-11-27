@@ -1,6 +1,8 @@
 //! "Who came along?": Shortcut claims → matched runs → GPX copies in the dogs' accounts.
 //!
 //! - `record`: stores a claim from the Shortcut.
+//! - `assign`: sets the dogs of one known run directly (the dogs page); stored as a claim
+//!   that is already matched, so the newest answer per run still wins.
 //! - `match_claims`: binds pending claims to exactly one run (start and end ±2 min;
 //!   without times: the run that ended within [received − 5 min, received + 1 min]).
 //! - `plan_copies`: the newest matched claim per run decides which dogs should have a copy;
@@ -45,6 +47,61 @@ pub async fn record(db: &PgPool, claim: &Claim) -> Result<Uuid> {
     .execute(db)
     .await?;
     Ok(id)
+}
+
+/// A run as the dogs page shows it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RecentRun {
+    pub id: Uuid,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub distance_m: i32,
+    /// Outdoor run with GPS: the dogs can get a copy.
+    pub eligible: bool,
+    /// The newest answer for this run; `None` if nobody answered yet.
+    pub dogs: Option<Vec<String>>,
+}
+
+/// The newest `limit` runs that still exist, newest first.
+pub async fn recent_runs(db: &PgPool, limit: i64) -> Result<Vec<RecentRun>> {
+    let rows = sqlx::query(
+        "SELECT r.id, r.start_time, r.end_time, r.distance_m, r.sport, r.has_gps,
+                (SELECT c.dogs FROM companion_claims c
+                 WHERE c.run_id = r.id AND c.status = 'matched'
+                 ORDER BY c.received_at DESC LIMIT 1) AS dogs
+         FROM runs r WHERE NOT r.gone
+         ORDER BY r.start_time DESC LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| RecentRun {
+            id: r.get("id"),
+            start_time: r.get("start_time"),
+            end_time: r.get("end_time"),
+            distance_m: r.get("distance_m"),
+            eligible: DOG_RUN_TYPES.contains(&r.get::<String, _>("sport").as_str())
+                && r.get::<bool, _>("has_gps"),
+            dogs: r.get("dogs"),
+        })
+        .collect())
+}
+
+/// Sets the dogs of a run; `false` if the run is unknown or gone.
+pub async fn assign(db: &PgPool, run: Uuid, dogs: &[String]) -> Result<bool> {
+    let done = sqlx::query(
+        "INSERT INTO companion_claims (id, dogs, run_id, status, started_at, ended_at)
+         SELECT $1, $2, r.id, 'matched', r.start_time, r.end_time FROM runs r
+         WHERE r.id = $3 AND NOT r.gone",
+    )
+    .bind(Uuid::new_v4())
+    .bind(dogs)
+    .bind(run)
+    .execute(db)
+    .await?;
+    Ok(done.rows_affected() == 1)
 }
 
 /// Binds pending claims to runs; never guesses between several candidates.
