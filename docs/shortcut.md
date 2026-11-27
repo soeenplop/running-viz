@@ -4,7 +4,7 @@ There are two ways to tell the server which dogs came along: the **dogs page** (
 
 ## The dogs page
 
-Open `https://running-viz-api.soeenplop.dev/dogs#<SHORTCUT_TOKEN>` once on the iPhone and add it to the home screen. The token stays in the URL fragment, which the browser never sends to the server; the page also remembers it on the device.
+Open `https://running-viz.soeenplop.dev/dogs#<SHORTCUT_TOKEN>` once on the iPhone and add it to the home screen. The token stays in the URL fragment, which the browser never sends to the server; the page also remembers it on the device.
 
 The page lists the newest 20 runs. Unanswered outdoor runs are highlighted. Tap **Nanuq**, **Anori** or **Keiner**; every tap is saved right away and is the newest answer for that run, so it also corrects older runs and earlier Shortcut answers. Treadmill runs and runs without GPS are shown but count only for me.
 
@@ -12,6 +12,19 @@ API behind it (both need `Authorization: Bearer <token>`):
 
 - `GET /api/runs` → `{"dogs": [...], "runs": [{"id", "start_time", "end_time", "distance_m", "eligible", "dogs"}]}`; `dogs` is `null` while a run has no answer.
 - `PUT /api/runs/{id}/dogs` with `{"dogs": ["nanuq"]}` → `200 {"status":"saved","dogs":[...]}`, `404` for an unknown run.
+
+## Push after each run
+
+With `NTFY_URL` set (e.g. `https://ntfy.sh/<random topic>`), the server sends a push via [ntfy](https://ntfy.sh) for every new outdoor run with GPS that has no answer yet (once per run, only for runs that ended in the last 24 hours):
+
+> **Wer war dabei?** Lauf Fr 27.11., 08:47 · 5,4 km — [Beide] [Nanuq] [Anori]
+
+- A button saves the answer right away (like the page) and clears the push. Nobody came: just swipe it away.
+- Tapping the message opens the dogs page (`PUBLIC_URL/dogs`).
+- The buttons don't carry the token: each link has a signature (`?sig=`, HMAC of the run id with `SHORTCUT_TOKEN`) that is valid for that run only. It does not expire, though: anyone who reads the push (every subscriber of the topic, and ntfy.sh itself) can change **that run's** dogs, also later. The topic name is the only protection, so make it random and keep it private.
+- Delivery is retried on the next sync while ntfy fails (up to a day after the run). If ntfy accepted a push but the server didn't get to record it (lost response, restart), the next pass sends it again: you may rarely get the same question twice. Answering both is harmless; the newest answer wins.
+
+On the iPhone: install the ntfy app and subscribe to the topic (server `ntfy.sh`, topic = the part after the last `/`).
 
 ## The Shortcut
 

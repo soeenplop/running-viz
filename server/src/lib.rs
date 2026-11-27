@@ -7,6 +7,7 @@ pub mod fit;
 pub mod gpx;
 pub mod http;
 pub mod import;
+pub mod notify;
 pub mod render;
 pub mod stats;
 pub mod sync;

@@ -222,10 +222,17 @@ struct Dogs {
     dogs: Vec<String>,
 }
 
-/// Sets who came along on one run; the newest answer per run wins.
+#[derive(serde::Deserialize)]
+struct Signed {
+    sig: Option<String>,
+}
+
+/// Sets who came along on one run; the newest answer per run wins. Needs the token, or
+/// a push button's signature for exactly this run (`?sig=`).
 async fn set_dogs(
     State(state): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    axum::extract::Query(signed): axum::extract::Query<Signed>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> (StatusCode, Json<Value>) {
@@ -233,7 +240,10 @@ async fn set_dogs(
     let Some(api) = &state.companions else {
         return reply(StatusCode::NOT_FOUND, "disabled");
     };
-    if !authorized(&headers, api) {
+    let signed_ok = signed
+        .sig
+        .is_some_and(|sig| same_secret(&sig, &crate::notify::signature(&api.token, id)));
+    if !signed_ok && !authorized(&headers, api) {
         return reply(StatusCode::UNAUTHORIZED, "unauthorized");
     }
     let Ok(req) = serde_json::from_slice::<Dogs>(&body) else {
