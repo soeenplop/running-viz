@@ -23,6 +23,12 @@ pub fn router(state: AppState) -> Router {
             "/api/companions",
             axum::routing::post(companions).layer(axum::extract::DefaultBodyLimit::max(4096)),
         )
+        .route("/dogs", get(dogs_page))
+        .route("/api/runs", get(recent_runs))
+        .route(
+            "/api/runs/{id}/dogs",
+            axum::routing::put(set_dogs).layer(axum::extract::DefaultBodyLimit::max(4096)),
+        )
         .with_state(state)
 }
 
@@ -124,12 +130,7 @@ async fn companions(
     let Some(api) = &state.companions else {
         return reply(StatusCode::NOT_FOUND, "disabled");
     };
-    let given = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .unwrap_or_default();
-    if !same_secret(given, &api.token) {
+    if !authorized(&headers, api) {
         return reply(StatusCode::UNAUTHORIZED, "unauthorized");
     }
     let Ok(mut claim) = serde_json::from_slice::<crate::companions::Claim>(&body) else {
@@ -146,12 +147,10 @@ async fn companions(
         }
         _ => {}
     }
-    claim.dogs = claim.dogs.iter().map(|d| d.trim().to_lowercase()).collect();
-    claim.dogs.sort();
-    claim.dogs.dedup();
-    if let Some(unknown) = claim.dogs.iter().find(|d| !api.dogs.contains(d)) {
-        return reply(StatusCode::BAD_REQUEST, &format!("unknown dog {unknown}"));
-    }
+    claim.dogs = match normalize_dogs(api, &claim.dogs) {
+        Ok(dogs) => dogs,
+        Err(msg) => return reply(StatusCode::BAD_REQUEST, &msg),
+    };
     {
         let mut last = api.last.lock().expect("claim lock");
         if last.is_some_and(|t| t.elapsed() < CLAIM_INTERVAL) {
@@ -170,6 +169,113 @@ async fn companions(
             tracing::warn!("storing claim failed: {err:#}");
             reply(StatusCode::SERVICE_UNAVAILABLE, "try again")
         }
+    }
+}
+
+/// The page to set who came along (web/dogs.html); the token travels in the URL fragment,
+/// which the browser never sends to the server.
+async fn dogs_page() -> Response {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+        axum::response::Html(include_str!("../../web/dogs.html")),
+    )
+        .into_response()
+}
+
+/// Runs shown on the dogs page.
+const RECENT_RUNS: i64 = 20;
+
+/// The newest runs with their dogs, plus the dog names (needs the token).
+async fn recent_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> (StatusCode, Json<Value>) {
+    let Some(api) = &state.companions else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "status": "disabled" })));
+    };
+    if !authorized(&headers, api) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "status": "unauthorized" })),
+        );
+    }
+    match crate::companions::recent_runs(&state.db, RECENT_RUNS).await {
+        Ok(runs) => (
+            StatusCode::OK,
+            Json(json!({ "dogs": api.dogs, "runs": runs })),
+        ),
+        Err(err) => {
+            tracing::warn!("listing runs failed: {err:#}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "status": "try again" })),
+            )
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct Dogs {
+    dogs: Vec<String>,
+}
+
+/// Sets who came along on one run; the newest answer per run wins.
+async fn set_dogs(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> (StatusCode, Json<Value>) {
+    let reply = |code, msg: &str| (code, Json(json!({ "status": msg })));
+    let Some(api) = &state.companions else {
+        return reply(StatusCode::NOT_FOUND, "disabled");
+    };
+    if !authorized(&headers, api) {
+        return reply(StatusCode::UNAUTHORIZED, "unauthorized");
+    }
+    let Ok(req) = serde_json::from_slice::<Dogs>(&body) else {
+        return reply(StatusCode::BAD_REQUEST, "expected {dogs}");
+    };
+    let dogs = match normalize_dogs(api, &req.dogs) {
+        Ok(dogs) => dogs,
+        Err(msg) => return reply(StatusCode::BAD_REQUEST, &msg),
+    };
+    match crate::companions::assign(&state.db, id, &dogs).await {
+        Ok(true) => {
+            api.trigger.notify_one();
+            (
+                StatusCode::OK,
+                Json(json!({ "status": "saved", "dogs": dogs })),
+            )
+        }
+        Ok(false) => reply(StatusCode::NOT_FOUND, "unknown run"),
+        Err(err) => {
+            tracing::warn!("assigning dogs failed: {err:#}");
+            reply(StatusCode::SERVICE_UNAVAILABLE, "try again")
+        }
+    }
+}
+
+fn authorized(headers: &HeaderMap, api: &crate::CompanionsApi) -> bool {
+    let given = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    same_secret(given, &api.token)
+}
+
+/// Lower case, sorted, without duplicates; only known dogs.
+fn normalize_dogs(api: &crate::CompanionsApi, dogs: &[String]) -> Result<Vec<String>, String> {
+    let mut dogs: Vec<String> = dogs.iter().map(|d| d.trim().to_lowercase()).collect();
+    dogs.sort();
+    dogs.dedup();
+    match dogs.iter().find(|d| !api.dogs.contains(d)) {
+        Some(unknown) => Err(format!("unknown dog {unknown}")),
+        None => Ok(dogs),
     }
 }
 

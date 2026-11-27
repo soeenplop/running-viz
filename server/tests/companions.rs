@@ -943,3 +943,144 @@ async fn re_add_during_pending_deletion_creates_next_generation() {
         ]
     );
 }
+
+fn authed(method: &str, uri: &str, token: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Authorization", format!("Bearer {token}"))
+        .header("Content-Type", "application/json")
+        .body(Body::from(body.to_owned()))
+        .unwrap()
+}
+
+async fn json_body(r: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(r.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// The dogs page: list the newest runs, set the dogs of one run, newest answer wins.
+#[tokio::test]
+async fn dogs_page_lists_runs_and_sets_dogs() {
+    let lazy = PgPool::connect_lazy("postgres://unused@localhost/unused").unwrap();
+    let r = app(lazy.clone())
+        .oneshot(authed("GET", "/api/runs", "wrong", ""))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let id = Uuid::new_v4();
+    let r = app(lazy.clone())
+        .oneshot(authed(
+            "PUT",
+            &format!("/api/runs/{id}/dogs"),
+            "wrong",
+            r#"{"dogs":[]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let r = app(lazy)
+        .oneshot(authed(
+            "PUT",
+            &format!("/api/runs/{id}/dogs"),
+            "s3cret",
+            r#"{"dogs":["rex"]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    let Some(db) = fresh_db().await else { return };
+    // in the past: the page stores its answers with the real clock
+    let old = run(&db, "2026-01-01T07:00:00Z", 30).await;
+    let new = run(&db, "2026-01-02T07:00:00Z", 30).await;
+    // a Shortcut answer for the old run, then corrected on the page
+    claim(
+        &db,
+        &["nanuq"],
+        Some("2026-01-01T07:00:00Z"),
+        Some("2026-01-01T07:30:00Z"),
+    )
+    .await;
+    plan(&db, "2026-01-01T08:00:00Z").await;
+
+    let page = app(db.clone());
+    let r = page
+        .clone()
+        .oneshot(authed("GET", "/api/runs", "s3cret", ""))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let body = json_body(r).await;
+    assert_eq!(body["dogs"], json!(["anori", "nanuq"]));
+    let runs = body["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0]["id"], json!(new), "newest first");
+    assert_eq!(runs[0]["dogs"], json!(null), "not answered yet");
+    assert_eq!(runs[1]["dogs"], json!(["nanuq"]));
+    assert_eq!(runs[1]["eligible"], json!(true));
+
+    let r = page
+        .clone()
+        .oneshot(authed(
+            "PUT",
+            &format!("/api/runs/{old}/dogs"),
+            "s3cret",
+            r#"{"dogs":["Anori"]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(
+        json_body(r).await,
+        json!({ "status": "saved", "dogs": ["anori"] })
+    );
+    let r = page
+        .clone()
+        .oneshot(authed(
+            "PUT",
+            &format!("/api/runs/{new}/dogs"),
+            "s3cret",
+            r#"{"dogs":[]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = page
+        .clone()
+        .oneshot(authed(
+            "PUT",
+            &format!("/api/runs/{}/dogs", Uuid::new_v4()),
+            "s3cret",
+            r#"{"dogs":[]}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+    // the page's answer is the newest: Nanuq's copy goes, Anori's comes
+    plan(&db, "2026-01-03T08:00:00Z").await;
+    let c = copies(&db, old).await;
+    assert!(c.contains(&("anori".into(), "pending".into(), 0)), "{c:?}");
+    assert!(
+        c.iter().all(|(d, s, _)| d != "nanuq" || s != "done"),
+        "{c:?}"
+    );
+    assert!(copies(&db, new).await.is_empty());
+    let body = json_body(
+        page.oneshot(authed("GET", "/api/runs", "s3cret", ""))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["runs"][0]["dogs"], json!([]), "answered: nobody");
+    assert_eq!(body["runs"][1]["dogs"], json!(["anori"]));
+
+    let r = app(db)
+        .oneshot(Request::get("/dogs").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+}

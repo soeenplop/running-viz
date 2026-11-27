@@ -15,7 +15,7 @@ Apple Watch ─▶ HealthFit ─▶ Dropbox (FIT)
      e-paper display (ESP8266)          browser (fullscreen)
 ```
 
-After every run, an Apple Watch–triggered Shortcut asks **"Who came along?"** and tells the server which dogs ran with me.
+Which dogs ran with me is set on a small page, **"Wer war dabei?"** (`/dogs`, see [docs/shortcut.md](docs/shortcut.md)): one tap per dog and run.
 
 ## Hardware
 
