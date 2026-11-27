@@ -21,7 +21,8 @@ With `NTFY_URL` set (e.g. `https://ntfy.sh/<random topic>`), the server sends a 
 
 - A button saves the answer right away (like the page) and clears the push. Nobody came: just swipe it away.
 - Tapping the message opens the dogs page (`PUBLIC_URL/dogs`).
-- The buttons don't carry the token: each link has a signature (`?sig=`, HMAC of the run id with `SHORTCUT_TOKEN`) that is valid for that run only. The topic name is the only secret ntfy.sh sees; anyone who knows it can read the run times, so make it random.
+- The buttons don't carry the token: each link has a signature (`?sig=`, HMAC of the run id with `SHORTCUT_TOKEN`) that is valid for that run only. It does not expire, though: anyone who reads the push (every subscriber of the topic, and ntfy.sh itself) can change **that run's** dogs, also later. The topic name is the only protection, so make it random and keep it private.
+- Delivery is retried on the next sync while ntfy fails (up to a day after the run). If ntfy accepted a push but the server didn't get to record it (lost response, restart), the next pass sends it again: you may rarely get the same question twice. Answering both is harmless; the newest answer wins.
 
 On the iPhone: install the ntfy app and subscribe to the topic (server `ntfy.sh`, topic = the part after the last `/`).
 

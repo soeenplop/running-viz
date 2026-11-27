@@ -44,20 +44,30 @@ impl Ntfy {
         }
         let (server, topic) = url
             .rsplit_once('/')
-            .filter(|(s, t)| s.starts_with("http") && !t.is_empty() && !s.ends_with('/'))
+            .filter(|(s, t)| web_url(s) && !t.is_empty() && !t.contains(['?', '#']))
             .context("NTFY_URL must look like https://ntfy.sh/<topic>")?;
-        if public_url.trim().is_empty() {
-            bail!("NTFY_URL needs PUBLIC_URL (where the buttons send the answer)");
+        let public_url = public_url.trim().trim_end_matches('/');
+        if !web_url(public_url) {
+            bail!(
+                "NTFY_URL needs PUBLIC_URL like https://running-viz.soeenplop.dev (where the buttons send the answer)"
+            );
         }
         Ok(Some(Self {
             client: reqwest::Client::new(),
             server: server.to_owned(),
             topic: topic.to_owned(),
-            public_url: public_url.trim().trim_end_matches('/').to_owned(),
+            public_url: public_url.to_owned(),
             secret: secret.to_owned(),
             dogs: dogs.to_vec(),
         }))
     }
+}
+
+/// An absolute http(s) URL with a host (the phone needs absolute button URLs).
+fn web_url(s: &str) -> bool {
+    reqwest::Url::parse(s).is_ok_and(|u| {
+        matches!(u.scheme(), "http" | "https") && u.host_str().is_some_and(|h| !h.is_empty())
+    })
 }
 
 /// Signature that allows setting the dogs of exactly this run (hex HMAC-SHA256).
@@ -178,8 +188,27 @@ mod tests {
         );
         assert_eq!(n.public_url, "https://api.example");
         assert!(Ntfy::from_url("", "x", "s", &[]).unwrap().is_none());
-        assert!(Ntfy::from_url("https://ntfy.sh/", "x", "s", &[]).is_err());
-        assert!(Ntfy::from_url("https://ntfy.sh/t", "", "s", &[]).is_err());
+        let ok = "https://running-viz.soeenplop.dev";
+        assert!(Ntfy::from_url("https://ntfy.sh/", ok, "s", &[]).is_err());
+        assert!(Ntfy::from_url("httpx://ntfy.sh/topic", ok, "s", &[]).is_err());
+        assert!(Ntfy::from_url("https:///topic", ok, "s", &[]).is_err());
+        assert!(Ntfy::from_url("ntfy.sh/topic", ok, "s", &[]).is_err());
+        for bad in [
+            "",
+            "running-viz.soeenplop.dev",
+            "ftp://x.example",
+            "https://",
+        ] {
+            assert!(
+                Ntfy::from_url("https://ntfy.sh/t", bad, "s", &[]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(
+            Ntfy::from_url("http://ntfy.local:8080/t", "http://10.0.0.2:8000", "s", &[])
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
