@@ -4,7 +4,7 @@ There are two ways to tell the server which dogs came along: the **dogs page** (
 
 ## The dogs page
 
-Open `https://running-viz-api.soeenplop.dev/dogs#<SHORTCUT_TOKEN>` once on the iPhone and add it to the home screen. The token stays in the URL fragment, which the browser never sends to the server; the page also remembers it on the device.
+Open `https://running-viz.soeenplop.dev/dogs#<SHORTCUT_TOKEN>` once on the iPhone and add it to the home screen. The token stays in the URL fragment, which the browser never sends to the server; the page also remembers it on the device.
 
 The page lists the newest 20 runs. Unanswered outdoor runs are highlighted. Tap **Nanuq**, **Anori** or **Keiner**; every tap is saved right away and is the newest answer for that run, so it also corrects older runs and earlier Shortcut answers. Treadmill runs and runs without GPS are shown but count only for me.
 

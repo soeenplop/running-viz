@@ -22,7 +22,7 @@ pub struct Ntfy {
     pub server: String,
     /// secret topic name
     pub topic: String,
-    /// where this server is reachable, e.g. `https://running-viz-api.soeenplop.dev`
+    /// where this server is reachable, e.g. `https://running-viz.soeenplop.dev`
     pub public_url: String,
     /// the companions token; only used to sign per-run links
     pub secret: String,
