@@ -96,15 +96,16 @@
           b.setAttribute("aria-pressed", String((run.dogs || []).includes(dog)));
           b.addEventListener("click", () => {
             const before = run.dogs || [];
-            save(run, row, before.includes(dog) ? before.filter((d) => d !== dog) : [...before, dog]);
+            save(run, before.includes(dog) ? before.filter((d) => d !== dog) : [...before, dog]);
           });
           buttons.append(b);
         }
         const none = document.createElement("button");
         none.textContent = "Keiner";
         none.setAttribute("aria-pressed", String(run.dogs !== null && run.dogs.length === 0));
-        none.addEventListener("click", () => save(run, row, []));
+        none.addEventListener("click", () => save(run, []));
         buttons.append(none);
+        buttons.querySelectorAll("button").forEach((b) => (b.disabled = !!run.saving));
         row.append(buttons);
       }
       list.append(row);
@@ -113,8 +114,10 @@
 
   let state = { dogs: [], runs: [] };
 
-  async function save(run, row, next) {
-    row.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  // a run's buttons stay disabled until its own save is done (other runs may re-render)
+  async function save(run, next) {
+    run.saving = true;
+    render(state.dogs, state.runs);
     try {
       const res = await api("/api/runs/" + run.id + "/dogs", {
         method: "PUT", body: JSON.stringify({ dogs: next }),
@@ -124,6 +127,7 @@
     } catch (e) {
       msg.textContent = e.message;
     }
+    run.saving = false;
     render(state.dogs, state.runs);
   }
 
